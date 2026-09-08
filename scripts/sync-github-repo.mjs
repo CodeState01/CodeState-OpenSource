@@ -40,6 +40,6 @@ for (const file of files) {
   process.stdout.write(`Enviado: ${file.path}\n`);
 }
 const createdTree = api(`/repos/${repo}/git/trees`, 'POST', mode === 'readme' ? { tree } : { base_tree: previous.tree.sha, tree });
-const commit = api(`/repos/${repo}/git/commits`, 'POST', { message: mode === 'readme' ? 'docs: keep public repository download-only' : 'release: CodeState 2.6.0', tree: createdTree.sha, parents: [parent] });
-api(`/repos/${repo}/git/refs/heads/main`, 'PATCH', { sha: commit.sha, force: false });
+const commit = api(`/repos/${repo}/git/commits`, 'POST', { message: mode === 'readme' ? 'docs: keep public repository download-only' : 'release: CodeState 2.6.0', tree: createdTree.sha, parents: mode === 'readme' ? [] : [parent] });
+api(`/repos/${repo}/git/refs/heads/main`, 'PATCH', { sha: commit.sha, force: mode === 'readme' });
 process.stdout.write(`Atualizado ${repo}: ${commit.sha}\n`);
