@@ -400,6 +400,14 @@ export function createApp(options = {}) {
       check(user, 401, 'Sua sessão expirou. Entre novamente.');
       if (mutating) check(req.headers['x-csrf-token'] === user.csrf, 403, 'Token de segurança inválido. Atualize a página.');
       if (url.pathname === '/api/bootstrap' && req.method === 'GET') return json(200, bootstrap(user));
+      if (url.pathname === '/api/auto-account' && req.method === 'POST') {
+        await body(req);
+        if(!user.guest)return json(200,{ok:true});
+        let username;do username=generatedUsername();while(get('SELECT id FROM users WHERE username=?',username));
+        const password=generatedPassword(),salt=token(),derived=await hashPassword(password,salt,64);
+        run('UPDATE users SET username=?,password=?,guest=0 WHERE id=?',username,`${salt}:${derived.toString('hex')}`,user.id);
+        return json(201,{ok:true,credentials:{username,password}});
+      }
       if (url.pathname === '/api/ai/providers' && req.method === 'GET') return json(200, { providers: await getAIProviders() });
       if (url.pathname.startsWith('/api/files/') && req.method === 'GET') {
         const fileId=url.pathname.split('/').pop(),file=get('SELECT * FROM attachments WHERE id=?',fileId);check(file,404,'Arquivo não encontrado.');channelFor(user.id,file.channel_id);

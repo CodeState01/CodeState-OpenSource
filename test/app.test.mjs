@@ -50,6 +50,14 @@ test('recreates an automatic account from locally saved credentials', async t =>
   const restored=await (await fetch(base+'/api/bootstrap',{headers:{cookie}})).json();
   assert.equal(restored.user.username,created.credentials.username);assert.equal(restored.user.name,'Nome Recuperado');
 });
+test('upgrades an existing visitor without asking for another registration', async t => {
+  const {base,app}=await appFixture(t),created=await guest(base);
+  app.db.prepare('UPDATE users SET guest=1,username=NULL,password=NULL WHERE id=?').run(created.data.user.id);
+  const boot=await (await fetch(base+'/api/bootstrap',{headers:{cookie:created.cookie}})).json();assert.equal(boot.user.guest,true);
+  const response=await fetch(base+'/api/auto-account',{method:'POST',headers:{cookie:created.cookie,'Content-Type':'application/json','X-Orbit-Request':'1','X-CSRF-Token':boot.csrf},body:'{}'});
+  const upgraded=await response.json();assert.equal(response.status,201);assert.match(upgraded.credentials.username,/^[a-z0-9_-]+$/);
+  const current=await (await fetch(base+'/api/bootstrap',{headers:{cookie:created.cookie}})).json();assert.equal(current.user.guest,false);
+});
 test('rejects local addresses as public invitation URLs', () => {
   assert.throws(() => createApp({ publicUrl:'https://127.0.0.1' }), /domínio público/);
   assert.throws(() => createApp({ publicUrl:'https://localhost' }), /domínio público/);

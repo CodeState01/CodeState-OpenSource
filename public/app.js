@@ -43,7 +43,7 @@ async function boot(){
     if(saved)try{await api('/api/login',{method:'POST',body:saved});state.data=await api('/api/bootstrap')}catch{try{await api('/api/recover',{method:'POST',body:{...saved,terms:true}});state.data=await api('/api/bootstrap')}catch{forgetCredentials()}}
     if(!state.data){created=await captchaGate();if(created?.credentials)saveCredentials(created.credentials);state.data=await api('/api/bootstrap')}
   }
-  state.csrf=state.data.csrf; state.serverId=state.data.servers[0]?.id||'orbit';state.aiHistory=state.data.aiHistory||[];const remembered=savedCredentials();if(remembered&&remembered.username===state.data.user.username)saveCredentials({...remembered,name:state.data.user.name});
+  state.csrf=state.data.csrf;if(state.data.user.guest){created=await api('/api/auto-account',{method:'POST',body:{}});if(created.credentials)saveCredentials({...created.credentials,name:state.data.user.name});state.data=await api('/api/bootstrap');state.csrf=state.data.csrf}state.serverId=state.data.servers[0]?.id||'orbit';state.aiHistory=state.data.aiHistory||[];const remembered=savedCredentials();if(remembered&&remembered.username===state.data.user.username)saveCredentials({...remembered,name:state.data.user.name});
   const first=state.data.channels.find(c=>c.server_id===state.serverId&&c.type==='text'); state.channelId=first?.id;
   if(state.data.project) state.code={...emptyCode,...state.data.project}; else { const local=localStorage.getItem('orbit-project'); if(local)try{state.code={...state.code,...JSON.parse(local)}}catch{} }
   renderShell(); connectEvents(); await openChannel(state.channelId); updateEditor(); renderMembers(); renderAIState();renderAIHistory();
