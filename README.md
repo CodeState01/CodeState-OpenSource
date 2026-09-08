@@ -7,6 +7,7 @@ Um espaço colaborativo em português com chat em tempo real, servidores e canai
 ## Recursos
 
 - Chat ao vivo via Server-Sent Events, com presença, indicador de digitação, reações e histórico em SQLite.
+- Pedidos de amizade com aceite, conversas privadas, arquivos privados, respostas vinculadas à mensagem original e encaminhamento para canais ou contatos.
 - Servidores privados com foto, fontes, convites HTTPS, cargos e canais com VFX opcional.
 - Envio em fluxo de fotos, vídeos, áudio e arquivos de até 100 MB, com controle de acesso e cota configurável.
 - Playground para HTML, CSS, JavaScript, Python, C#, C++ e Luau, com prévia web e prévia estrutural de interfaces Tkinter/PyQt, WinForms/WPF, Qt/ImGui e Roblox UI.

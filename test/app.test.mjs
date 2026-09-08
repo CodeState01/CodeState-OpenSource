@@ -101,6 +101,27 @@ test('rejects mutations without CSRF and stores messages with it', async t => {
   const accepted = await fetch(base + '/api/messages', { method:'POST', headers:auth, body:JSON.stringify({channelId,content:'Olá em tempo real'}) });
   assert.equal(accepted.status, 201); assert.equal((await accepted.json()).content, 'Olá em tempo real');
 });
+test('requires accepted friendships and supports private replies and forwarding', async t => {
+  const {base}=await appFixture(t),alice=await account(base),bob=await account(base),outsider=await account(base);
+  const auth=value=>({cookie:value.cookie,'Content-Type':'application/json','X-Orbit-Request':'1','X-CSRF-Token':value.data.csrf}),aliceAuth=auth(alice),bobAuth=auth(bob);
+  const requested=await fetch(base+'/api/friends',{method:'POST',headers:aliceAuth,body:JSON.stringify({action:'request',username:bob.data.user.username})});assert.equal(requested.status,201);
+  const pending=await (await fetch(base+'/api/bootstrap',{headers:{cookie:bob.cookie}})).json();assert.equal(pending.friendRequests[0].id,alice.data.user.id);
+  const premature=await fetch(base+'/api/direct-messages',{method:'POST',headers:bobAuth,body:JSON.stringify({userId:alice.data.user.id,content:'cedo demais'})});assert.equal(premature.status,403);
+  const accepted=await fetch(base+'/api/friends',{method:'POST',headers:bobAuth,body:JSON.stringify({action:'accept',userId:alice.data.user.id})});assert.equal(accepted.status,200);
+  const aliceBoot=await (await fetch(base+'/api/bootstrap',{headers:{cookie:alice.cookie}})).json();assert.equal(aliceBoot.friends[0].id,bob.data.user.id);
+  const first=await fetch(base+'/api/direct-messages',{method:'POST',headers:aliceAuth,body:JSON.stringify({userId:bob.data.user.id,content:'Mensagem privada'})}),firstMessage=await first.json();assert.equal(first.status,201);
+  const reply=await fetch(base+'/api/direct-messages',{method:'POST',headers:bobAuth,body:JSON.stringify({userId:alice.data.user.id,content:'Recebida',replyTo:firstMessage.id})}),replyMessage=await reply.json();assert.equal(reply.status,201);assert.equal(replyMessage.reply.content,'Mensagem privada');
+  const created=await fetch(base+'/api/servers',{method:'POST',headers:aliceAuth,body:JSON.stringify({name:'Equipe Encaminhar'})}),serverId=(await created.json()).id;
+  const boot=await (await fetch(base+'/api/bootstrap',{headers:{cookie:alice.cookie}})).json(),channel=boot.channels.find(item=>item.server_id===serverId&&item.type==='text');
+  const original=await (await fetch(base+'/api/messages',{method:'POST',headers:aliceAuth,body:JSON.stringify({channelId:channel.id,content:'Plano do projeto'})})).json();
+  const channelReply=await (await fetch(base+'/api/messages',{method:'POST',headers:aliceAuth,body:JSON.stringify({channelId:channel.id,content:'Detalhes',replyTo:original.id})})).json();assert.equal(channelReply.reply.content,'Plano do projeto');
+  const forwarded=await fetch(base+'/api/messages/forward',{method:'POST',headers:aliceAuth,body:JSON.stringify({messageId:original.id,userId:bob.data.user.id})}),forwardedMessage=await forwarded.json();assert.equal(forwarded.status,201);assert.equal(forwardedMessage.forwardedAuthor,alice.data.user.name);
+  const history=await (await fetch(base+`/api/direct-messages?userId=${alice.data.user.id}`,{headers:{cookie:bob.cookie}})).json();assert.ok(history.some(message=>message.content==='Plano do projeto'&&message.forwardedAuthor===alice.data.user.name));
+  const upload=await fetch(base+`/api/direct-files?userId=${bob.data.user.id}`,{method:'POST',headers:{...aliceAuth,'Content-Type':'text/plain','X-File-Name':encodeURIComponent('privado.txt')},body:'arquivo privado'}),fileMessage=await upload.json();assert.equal(upload.status,201);assert.equal(fileMessage.attachments[0].name,'privado.txt');
+  const download=await fetch(base+fileMessage.attachments[0].url,{headers:{cookie:bob.cookie}});assert.equal(await download.text(),'arquivo privado');
+  const blockedFile=await fetch(base+fileMessage.attachments[0].url,{headers:{cookie:outsider.cookie}});assert.equal(blockedFile.status,403);
+  const denied=await fetch(base+`/api/direct-messages?userId=${alice.data.user.id}`,{headers:{cookie:outsider.cookie}});assert.equal(denied.status,403);
+});
 test('keeps the default presentation channel visible and read-only', async t => {
   const { base }=await appFixture(t),{cookie,data}=await guest(base);
   const orbitChannels=data.channels.filter(channel=>channel.server_id==='orbit');

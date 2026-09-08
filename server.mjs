@@ -183,6 +183,11 @@ export function createApp(options = {}) {
     CREATE INDEX IF NOT EXISTS attachments_message ON attachments(message_id);
     CREATE TABLE IF NOT EXISTS roles (id TEXT PRIMARY KEY, server_id TEXT NOT NULL REFERENCES servers(id) ON DELETE CASCADE, name TEXT NOT NULL, color TEXT NOT NULL, permissions TEXT NOT NULL, position INTEGER NOT NULL);
     CREATE TABLE IF NOT EXISTS member_roles (server_id TEXT NOT NULL REFERENCES servers(id) ON DELETE CASCADE, user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE, role_id TEXT NOT NULL REFERENCES roles(id) ON DELETE CASCADE, PRIMARY KEY(server_id,user_id,role_id));
+    CREATE TABLE IF NOT EXISTS friendships (sender_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE, receiver_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE, status TEXT NOT NULL, created_at INTEGER NOT NULL, PRIMARY KEY(sender_id,receiver_id));
+    CREATE TABLE IF NOT EXISTS message_context (message_id TEXT PRIMARY KEY REFERENCES messages(id) ON DELETE CASCADE, reply_to TEXT REFERENCES messages(id) ON DELETE SET NULL, forwarded_author TEXT NOT NULL DEFAULT '');
+    CREATE TABLE IF NOT EXISTS direct_messages (id TEXT PRIMARY KEY, sender_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE, receiver_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE, content TEXT NOT NULL, reply_to TEXT REFERENCES direct_messages(id) ON DELETE SET NULL, forwarded_author TEXT NOT NULL DEFAULT '', created_at INTEGER NOT NULL);
+    CREATE INDEX IF NOT EXISTS direct_messages_pair_time ON direct_messages(sender_id,receiver_id,created_at);
+    CREATE TABLE IF NOT EXISTS direct_attachments (id TEXT PRIMARY KEY, message_id TEXT NOT NULL REFERENCES direct_messages(id) ON DELETE CASCADE, sender_id TEXT NOT NULL REFERENCES users(id), receiver_id TEXT NOT NULL REFERENCES users(id), name TEXT NOT NULL, mime TEXT NOT NULL, size INTEGER NOT NULL, path TEXT NOT NULL, created_at INTEGER NOT NULL);
   `);
   const run = (sql, ...args) => db.prepare(sql).run(...args);
   const get = (sql, ...args) => db.prepare(sql).get(...args);
@@ -267,6 +272,8 @@ export function createApp(options = {}) {
     const serverRow=get('SELECT owner_id FROM servers WHERE id=?',serverId);if(serverRow?.owner_id===userId)return true;
     return rolesFor(userId,serverId).some(role=>{try{const list=JSON.parse(role.permissions);return list.includes('administrator')||list.includes(permission)}catch{return false}});
   };
+  const areFriends=(a,b)=>!!get("SELECT 1 FROM friendships WHERE status='accepted' AND ((sender_id=? AND receiver_id=?) OR (sender_id=? AND receiver_id=?))",a,b,b,a);
+  const sendUser=(userId,event,data)=>{for(const client of clients.values())if(client.userId===userId)send(client.res,event,data)};
   function channelFor(userId, channelId) {
     const c = get('SELECT * FROM channels WHERE id=?', channelId);
     check(c && member(userId, c.server_id), 403, 'Você não tem acesso a este canal.'); return c;
@@ -302,13 +309,16 @@ export function createApp(options = {}) {
   const callCounts = () => Object.fromEntries([...new Set([...calls.values()].map(c => c.channelId))].map(c => [c, [...calls.values()].filter(p => p.channelId === c).length]));
   function messageData(m) {
     const attachments=all('SELECT id,name,mime,size FROM attachments WHERE message_id=? ORDER BY created_at',m.id).map(file=>({...file,url:`/api/files/${file.id}`}));
-    return { id: m.id, channelId: m.channel_id, content: m.content, createdAt: m.created_at, user: publicUser(get('SELECT * FROM users WHERE id=?', m.user_id)), reactions: all('SELECT emoji,user_id AS userId FROM reactions WHERE message_id=?', m.id), attachments };
+    const context=get('SELECT * FROM message_context WHERE message_id=?',m.id),reply=context?.reply_to?get('SELECT * FROM messages WHERE id=? AND channel_id=?',context.reply_to,m.channel_id):null;
+    return { id: m.id, channelId: m.channel_id, content: m.content, createdAt: m.created_at, user: publicUser(get('SELECT * FROM users WHERE id=?', m.user_id)), reactions: all('SELECT emoji,user_id AS userId FROM reactions WHERE message_id=?', m.id), attachments,reply:reply?{id:reply.id,content:reply.content,user:publicUser(get('SELECT * FROM users WHERE id=?',reply.user_id))}:null,forwardedAuthor:context?.forwarded_author||'' };
   }
+  function directMessageData(m,viewerId){const peerId=m.sender_id===viewerId?m.receiver_id:m.sender_id,reply=m.reply_to?get('SELECT * FROM direct_messages WHERE id=?',m.reply_to):null,attachments=all('SELECT id,name,mime,size FROM direct_attachments WHERE message_id=? ORDER BY created_at',m.id).map(file=>({...file,url:`/api/files/${file.id}`}));return{id:m.id,channelId:`dm:${peerId}`,direct:true,peerId,content:m.content,createdAt:m.created_at,user:publicUser(get('SELECT * FROM users WHERE id=?',m.sender_id)),reactions:[],attachments,reply:reply?{id:reply.id,content:reply.content,user:publicUser(get('SELECT * FROM users WHERE id=?',reply.sender_id))}:null,forwardedAuthor:m.forwarded_author||''}}
+  function directVisible(userId,messageId){const m=get('SELECT * FROM direct_messages WHERE id=?',messageId);return m&&(m.sender_id===userId||m.receiver_id===userId)?m:null}
   function bootstrap(user) {
     const servers = all('SELECT s.* FROM servers s JOIN members m ON s.id=m.server_id WHERE m.user_id=?', user.id).map(s => ({ id: s.id, name: s.name, description: s.description, ownerId: s.owner_id, public: !!s.public, icon:s.icon||'', font:s.font||'inter',permissions:permissionsFor(user.id,s.id) }));
     const channels = all('SELECT c.* FROM channels c JOIN members m ON c.server_id=m.server_id WHERE m.user_id=? AND COALESCE(c.hidden,0)=0 ORDER BY c.rowid', user.id);
     const onlineIds = new Set([...clients.values()].map(c => c.userId)); onlineIds.add(user.id);
-    const members = all('SELECT u.id,u.name,u.color,u.guest,u.avatar,u.banner,m.server_id FROM users u JOIN members m ON m.user_id=u.id WHERE m.server_id IN (SELECT server_id FROM members WHERE user_id=?)', user.id).map(u => ({ ...publicUser(u), serverId: u.server_id, online: onlineIds.has(u.id), bot: u.id === 'orbit-guide', roles:rolesFor(u.id,u.server_id).map(role=>({id:role.id,name:role.name,color:role.color})) }));
+    const members = all('SELECT u.id,u.name,u.username,u.color,u.guest,u.avatar,u.banner,m.server_id FROM users u JOIN members m ON m.user_id=u.id WHERE m.server_id IN (SELECT server_id FROM members WHERE user_id=?)', user.id).map(u => ({ ...publicUser(u), username:u.username||'',serverId: u.server_id, online: onlineIds.has(u.id), bot: u.id === 'orbit-guide', roles:rolesFor(u.id,u.server_id).map(role=>({id:role.id,name:role.name,color:role.color})) }));
     const aiProviders = [
       { id: 'demo', name: 'Demonstração', free: true, available: true },
       { id: 'ollama', name: `Ollama · ${config.ollamaModel}`, free: true, available: false, local: true, reason: 'Verificando Ollama…' },
@@ -319,7 +329,11 @@ export function createApp(options = {}) {
     const legacy = get('SELECT html,css FROM projects WHERE user_id=?', user.id) || null;
     const savedFiles = Object.fromEntries(all('SELECT language,content FROM project_files WHERE user_id=?', user.id).map(f => [f.language, f.content]));
     const aiHistory = all('SELECT role,content FROM ai_messages WHERE user_id=? ORDER BY created_at DESC,rowid DESC LIMIT 20', user.id).reverse();
-    return { user: { ...publicUser(user), username:user.username || '' }, csrf: user.csrf, servers, channels, members, calls: callCounts(), aiEnabled: aiProviders.some(p => p.id !== 'demo' && p.available), aiProviders, guestAI: config.allowGuestAI, project: legacy ? { ...legacy, ...savedFiles } : (Object.keys(savedFiles).length ? savedFiles : null), aiHistory };
+    const onlineUserIds=new Set([...clients.values()].map(client=>client.userId));
+    const friends=all("SELECT u.* FROM users u WHERE u.id IN (SELECT CASE WHEN sender_id=? THEN receiver_id ELSE sender_id END FROM friendships WHERE status='accepted' AND (sender_id=? OR receiver_id=?))",user.id,user.id,user.id).map(friend=>({...publicUser(friend),username:friend.username||'',online:onlineUserIds.has(friend.id)}));
+    const friendRequests=all("SELECT f.sender_id AS id,u.name,u.username,u.color,u.avatar,u.banner FROM friendships f JOIN users u ON u.id=f.sender_id WHERE f.receiver_id=? AND f.status='pending' ORDER BY f.created_at DESC",user.id).map(request=>({...publicUser(request),username:request.username||''}));
+    const sentRequests=all("SELECT receiver_id AS id FROM friendships WHERE sender_id=? AND status='pending'",user.id).map(request=>request.id);
+    return { user: { ...publicUser(user), username:user.username || '' }, csrf: user.csrf, servers, channels, members, friends, friendRequests, sentRequests, calls: callCounts(), aiEnabled: aiProviders.some(p => p.id !== 'demo' && p.available), aiProviders, guestAI: config.allowGuestAI, project: legacy ? { ...legacy, ...savedFiles } : (Object.keys(savedFiles).length ? savedFiles : null), aiHistory };
   }
   const allowedStatic = new Map(['index.html', 'terms.html', 'styles.css', 'captcha.css', 'features.css', 'app.js', 'calls.js', 'icons.js', 'favicon.svg'].map(f => ['/' + f, resolve(root, 'public', f)]));
   const server = http.createServer(async (req, res) => {
@@ -410,7 +424,7 @@ export function createApp(options = {}) {
       }
       if (url.pathname === '/api/ai/providers' && req.method === 'GET') return json(200, { providers: await getAIProviders() });
       if (url.pathname.startsWith('/api/files/') && req.method === 'GET') {
-        const fileId=url.pathname.split('/').pop(),file=get('SELECT * FROM attachments WHERE id=?',fileId);check(file,404,'Arquivo não encontrado.');channelFor(user.id,file.channel_id);
+        const fileId=url.pathname.split('/').pop();let file=get('SELECT * FROM attachments WHERE id=?',fileId),direct=false;if(!file){file=get('SELECT * FROM direct_attachments WHERE id=?',fileId);direct=true}check(file,404,'Arquivo não encontrado.');if(direct)check(file.sender_id===user.id||file.receiver_id===user.id,403,'Acesso negado.');else channelFor(user.id,file.channel_id);
         const path=resolve(uploadDir,file.path);check(path.startsWith(uploadDir),400,'Arquivo inválido.');const info=await stat(path),range=/bytes=(\d*)-(\d*)/.exec(req.headers.range||'');
         const safeInline=/^(image\/(png|jpeg|webp|gif)|video\/(mp4|webm)|audio\/(mpeg|ogg|wav|webm))$/i.test(file.mime),headers={'Content-Type':safeInline?file.mime:'application/octet-stream','Accept-Ranges':'bytes','Cache-Control':'private, max-age=3600','Content-Disposition':`${safeInline?'inline':'attachment'}; filename*=UTF-8''${encodeURIComponent(file.name)}`};
         if(range){const start=range[1]?Number(range[1]):0,end=range[2]?Math.min(Number(range[2]),info.size-1):info.size-1;check(Number.isFinite(start)&&Number.isFinite(end)&&start<=end&&end<info.size,416,'Intervalo inválido.');res.writeHead(206,{...headers,'Content-Range':`bytes ${start}-${end}/${info.size}`,'Content-Length':end-start+1});return createReadStream(path,{start,end}).pipe(res)}
@@ -460,6 +474,34 @@ export function createApp(options = {}) {
           clients.delete(clientId); leaveCall(clientId); presence();
         });
         return;
+      }
+      if (url.pathname === '/api/friends' && req.method === 'POST') {
+        rate('friends:'+user.id,30,60000);const b=await body(req),action=String(b.action||'request');
+        if(action==='request'){
+          const username=validUsername(b.username),target=get('SELECT * FROM users WHERE username=?',username);check(target&&target.id!=='orbit-guide',404,'Usuário não encontrado.');check(target.id!==user.id,400,'Você não pode adicionar a si mesmo.');
+          check(!areFriends(user.id,target.id),409,'Esta pessoa já está nos seus contatos.');
+          const received=get("SELECT 1 FROM friendships WHERE sender_id=? AND receiver_id=? AND status='pending'",target.id,user.id);check(!received,409,'Essa pessoa já enviou um pedido para você. Aceite o pedido recebido.');
+          check(!get("SELECT 1 FROM friendships WHERE sender_id=? AND receiver_id=? AND status='pending'",user.id,target.id),409,'Pedido já enviado.');
+          run("INSERT INTO friendships VALUES (?,?,'pending',?)",user.id,target.id,Date.now());sendUser(target.id,'friends-refresh',{});return json(201,{ok:true});
+        }
+        const otherId=string(b.userId,1,80,'Usuário');
+        if(action==='accept'){const pending=get("SELECT 1 FROM friendships WHERE sender_id=? AND receiver_id=? AND status='pending'",otherId,user.id);check(pending,404,'Pedido de amizade não encontrado.');run("UPDATE friendships SET status='accepted' WHERE sender_id=? AND receiver_id=?",otherId,user.id);sendUser(otherId,'friends-refresh',{});sendUser(user.id,'friends-refresh',{});return json(200,{ok:true})}
+        if(action==='reject'||action==='remove'){run('DELETE FROM friendships WHERE (sender_id=? AND receiver_id=?) OR (sender_id=? AND receiver_id=?)',user.id,otherId,otherId,user.id);sendUser(otherId,'friends-refresh',{});sendUser(user.id,'friends-refresh',{});return json(200,{ok:true})}
+        throw new HttpError(400,'Ação de amizade inválida.');
+      }
+      if (url.pathname === '/api/direct-messages' && req.method === 'GET') {
+        const peerId=string(url.searchParams.get('userId'),1,80,'Usuário');check(areFriends(user.id,peerId),403,'Aceite a amizade antes de conversar.');
+        const rows=all('SELECT * FROM direct_messages WHERE (sender_id=? AND receiver_id=?) OR (sender_id=? AND receiver_id=?) ORDER BY created_at DESC,rowid DESC LIMIT 80',user.id,peerId,peerId,user.id).reverse();return json(200,rows.map(message=>directMessageData(message,user.id)));
+      }
+      if (url.pathname === '/api/direct-messages' && req.method === 'POST') {
+        rate('direct-message:'+user.id,50,60000);const b=await body(req),peerId=string(b.userId,1,80,'Usuário');check(areFriends(user.id,peerId),403,'Aceite a amizade antes de conversar.');const content=string(b.content,1,4000,'Mensagem');
+        let replyTo=null;if(b.replyTo){const reply=directVisible(user.id,b.replyTo);check(reply&&[reply.sender_id,reply.receiver_id].includes(peerId),400,'Resposta inválida.');replyTo=reply.id}
+        const messageId=id();run('INSERT INTO direct_messages VALUES (?,?,?,?,?,?,?)',messageId,user.id,peerId,content,replyTo,'',Date.now());const message=get('SELECT * FROM direct_messages WHERE id=?',messageId);sendUser(user.id,'direct-message',directMessageData(message,user.id));sendUser(peerId,'direct-message',directMessageData(message,peerId));return json(201,directMessageData(message,user.id));
+      }
+      if (url.pathname === '/api/direct-messages/forward' && req.method === 'POST') {
+        rate('forward:'+user.id,30,60000);const b=await body(req),source=directVisible(user.id,b.messageId);check(source,404,'Mensagem não encontrada.');const author=publicUser(get('SELECT * FROM users WHERE id=?',source.sender_id)).name;
+        if(b.channelId){const target=channelFor(user.id,b.channelId);check(['text','voice'].includes(target.type)&&!target.read_only,400,'Canal de destino inválido.');const messageId=id();run('INSERT INTO messages VALUES (?,?,?,?,?)',messageId,target.id,user.id,source.content,Date.now());run('INSERT INTO message_context VALUES (?,?,?)',messageId,null,author);const sent=messageData(get('SELECT * FROM messages WHERE id=?',messageId));emitServer(target.server_id,'message',sent);return json(201,sent)}
+        const peerId=string(b.userId,1,80,'Usuário');check(areFriends(user.id,peerId),403,'Destino privado indisponível.');const messageId=id();run('INSERT INTO direct_messages VALUES (?,?,?,?,?,?,?)',messageId,user.id,peerId,source.content,null,author,Date.now());const sent=get('SELECT * FROM direct_messages WHERE id=?',messageId);sendUser(user.id,'direct-message',directMessageData(sent,user.id));sendUser(peerId,'direct-message',directMessageData(sent,peerId));return json(201,directMessageData(sent,user.id));
       }
       if (url.pathname === '/api/servers' && req.method === 'POST') {
         rate('server:' + user.id, 10, 3600000);
@@ -532,21 +574,36 @@ export function createApp(options = {}) {
       }
       if (url.pathname === '/api/messages' && req.method === 'POST') {
         rate('message:' + user.id, 40, 60000); const b = await body(req), c = channelFor(user.id, b.channelId);
-        check(['text','voice'].includes(c.type), 400, 'Use um canal de conversa.');check(!c.read_only,403,'Este canal é somente leitura.'); const messageId = id(), content = string(b.content, 1, 4000, 'Mensagem');
+        check(['text','voice'].includes(c.type), 400, 'Use um canal de conversa.');check(!c.read_only,403,'Este canal é somente leitura.');const reply=b.replyTo?get('SELECT id FROM messages WHERE id=? AND channel_id=?',b.replyTo,c.id):null;check(!b.replyTo||reply,400,'Resposta inválida.');const messageId = id(), content = string(b.content, 1, 4000, 'Mensagem');
         run('INSERT INTO messages VALUES (?,?,?,?,?)', messageId, c.id, user.id, content, Date.now());
+        if(reply)run('INSERT INTO message_context VALUES (?,?,?)',messageId,reply.id,'');
         const message = messageData(get('SELECT * FROM messages WHERE id=?', messageId));
         emitServer(c.server_id, 'message', message); return json(201, message);
+      }
+      if (url.pathname === '/api/messages/forward' && req.method === 'POST') {
+        rate('forward:'+user.id,30,60000);const b=await body(req),source=get('SELECT * FROM messages WHERE id=?',b.messageId);check(source,404,'Mensagem não encontrada.');channelFor(user.id,source.channel_id);const author=publicUser(get('SELECT * FROM users WHERE id=?',source.user_id)).name;
+        if(b.channelId){const target=channelFor(user.id,b.channelId);check(['text','voice'].includes(target.type)&&!target.read_only,400,'Canal de destino inválido.');const messageId=id();run('INSERT INTO messages VALUES (?,?,?,?,?)',messageId,target.id,user.id,source.content,Date.now());run('INSERT INTO message_context VALUES (?,?,?)',messageId,null,author);const sent=messageData(get('SELECT * FROM messages WHERE id=?',messageId));emitServer(target.server_id,'message',sent);return json(201,sent)}
+        const peerId=string(b.userId,1,80,'Usuário');check(areFriends(user.id,peerId),403,'Destino privado indisponível.');const messageId=id();run('INSERT INTO direct_messages VALUES (?,?,?,?,?,?,?)',messageId,user.id,peerId,source.content,null,author,Date.now());const sent=get('SELECT * FROM direct_messages WHERE id=?',messageId);sendUser(user.id,'direct-message',directMessageData(sent,user.id));sendUser(peerId,'direct-message',directMessageData(sent,peerId));return json(201,directMessageData(sent,user.id));
       }
       if (url.pathname === '/api/files' && req.method === 'POST') {
         rate('upload:'+user.id,20,600000);const c=channelFor(user.id,url.searchParams.get('channelId'));check(['text','voice'].includes(c.type),400,'Use um canal de conversa.');check(!c.read_only,403,'Este canal é somente leitura.');
         let filename;try{filename=decodeURIComponent(String(req.headers['x-file-name']||''))}catch{throw new HttpError(400,'Nome de arquivo inválido.')}filename=string(filename,1,160,'Nome do arquivo');check(!/[\\/\x00-\x1f]/.test(filename),400,'Nome de arquivo inválido.');
         const mime=String(req.headers['content-type']||'application/octet-stream').split(';')[0].toLowerCase();check(/^[a-z0-9.+-]+\/[a-z0-9.+-]+$/.test(mime),400,'Tipo de arquivo inválido.');const declared=Number(req.headers['content-length']||0);check(!declared||declared<=config.maxUploadBytes,413,`O arquivo pode ter até ${Math.floor(config.maxUploadBytes/1048576)} MB.`);
-        const used=get('SELECT COALESCE(SUM(size),0) AS total FROM attachments WHERE user_id=?',user.id).total;check(used+declared<=config.maxUserStorageBytes,413,'Seu limite de armazenamento foi atingido.');
+        const used=get('SELECT (SELECT COALESCE(SUM(size),0) FROM attachments WHERE user_id=?)+(SELECT COALESCE(SUM(size),0) FROM direct_attachments WHERE sender_id=?) AS total',user.id,user.id).total;check(used+declared<=config.maxUserStorageBytes,413,'Seu limite de armazenamento foi atingido.');
         const fileId=id(),messageId=id(),stored=`${fileId}.bin`,path=resolve(uploadDir,stored);check(path.startsWith(uploadDir),400,'Arquivo inválido.');let handle,size=0;
         try{handle=await open(path,'wx');for await(const chunk of req){size+=chunk.length;check(size<=config.maxUploadBytes,413,`O arquivo pode ter até ${Math.floor(config.maxUploadBytes/1048576)} MB.`);check(used+size<=config.maxUserStorageBytes,413,'Seu limite de armazenamento foi atingido.');await handle.write(chunk)}check(size>0,400,'O arquivo está vazio.');await handle.close();handle=null;
           db.exec('BEGIN');try{run('INSERT INTO messages VALUES (?,?,?,?,?)',messageId,c.id,user.id,`📎 ${filename}`,Date.now());run('INSERT INTO attachments VALUES (?,?,?,?,?,?,?,?,?)',fileId,messageId,c.id,user.id,filename,mime,size,stored,Date.now());db.exec('COMMIT')}catch(error){db.exec('ROLLBACK');throw error}
         }catch(error){if(handle)await handle.close().catch(()=>{});await unlink(path).catch(()=>{});throw error}
         const message=messageData(get('SELECT * FROM messages WHERE id=?',messageId));emitServer(c.server_id,'message',message);return json(201,message);
+      }
+      if (url.pathname === '/api/direct-files' && req.method === 'POST') {
+        rate('upload:'+user.id,20,600000);const peerId=string(url.searchParams.get('userId'),1,80,'Usuário');check(areFriends(user.id,peerId),403,'Destino privado indisponível.');
+        let filename;try{filename=decodeURIComponent(String(req.headers['x-file-name']||''))}catch{throw new HttpError(400,'Nome de arquivo inválido.')}filename=string(filename,1,160,'Nome do arquivo');check(!/[\\/\x00-\x1f]/.test(filename),400,'Nome de arquivo inválido.');
+        const mime=String(req.headers['content-type']||'application/octet-stream').split(';')[0].toLowerCase();check(/^[a-z0-9.+-]+\/[a-z0-9.+-]+$/.test(mime),400,'Tipo de arquivo inválido.');const declared=Number(req.headers['content-length']||0);check(!declared||declared<=config.maxUploadBytes,413,`O arquivo pode ter até ${Math.floor(config.maxUploadBytes/1048576)} MB.`);
+        const used=get('SELECT (SELECT COALESCE(SUM(size),0) FROM attachments WHERE user_id=?)+(SELECT COALESCE(SUM(size),0) FROM direct_attachments WHERE sender_id=?) AS total',user.id,user.id).total;check(used+declared<=config.maxUserStorageBytes,413,'Seu limite de armazenamento foi atingido.');
+        const fileId=id(),messageId=id(),stored=`${fileId}.bin`,path=resolve(uploadDir,stored);check(path.startsWith(uploadDir),400,'Arquivo inválido.');let handle,size=0;
+        try{handle=await open(path,'wx');for await(const chunk of req){size+=chunk.length;check(size<=config.maxUploadBytes,413,`O arquivo pode ter até ${Math.floor(config.maxUploadBytes/1048576)} MB.`);check(used+size<=config.maxUserStorageBytes,413,'Seu limite de armazenamento foi atingido.');await handle.write(chunk)}check(size>0,400,'O arquivo está vazio.');await handle.close();handle=null;db.exec('BEGIN');try{run('INSERT INTO direct_messages VALUES (?,?,?,?,?,?,?)',messageId,user.id,peerId,`📎 ${filename}`,null,'',Date.now());run('INSERT INTO direct_attachments VALUES (?,?,?,?,?,?,?,?,?)',fileId,messageId,user.id,peerId,filename,mime,size,stored,Date.now());db.exec('COMMIT')}catch(error){db.exec('ROLLBACK');throw error}}catch(error){if(handle)await handle.close().catch(()=>{});await unlink(path).catch(()=>{});throw error}
+        const message=get('SELECT * FROM direct_messages WHERE id=?',messageId);sendUser(user.id,'direct-message',directMessageData(message,user.id));sendUser(peerId,'direct-message',directMessageData(message,peerId));return json(201,directMessageData(message,user.id));
       }
       if (url.pathname.startsWith('/api/messages/') && req.method === 'DELETE') {
         const messageId = url.pathname.split('/').pop(), m = get('SELECT * FROM messages WHERE id=?', messageId);
