@@ -1,6 +1,6 @@
 {
   "name": "codestate",
-  "version": "2.6.1",
+  "version": "2.6.2",
   "private": true,
   "type": "module",
   "main": "desktop/main.cjs",
@@ -46,7 +46,14 @@
       "node_modules/sax/**/*",
       "node_modules/tiny-typed-emitter/**/*"
     ],
-    "publish": [{ "provider": "github", "owner": "CodeState01", "repo": "codestate", "releaseType": "release" }],
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "CodeState01",
+        "repo": "codestate",
+        "releaseType": "release"
+      }
+    ],
     "directories": {
       "output": "dist",
       "buildResources": "desktop"
