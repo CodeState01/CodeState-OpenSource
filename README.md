@@ -21,6 +21,7 @@ Um espaço colaborativo em português com chat em tempo real, servidores e canai
 - Interface responsiva, navegação por teclado, loaders personalizados e tema escuro em português.
 - Canal inicial de apresentação somente leitura, aceite obrigatório dos Termos e avisos claros sobre as limitações e a espera da IA Beta.
 - Conta automática no primeiro acesso: o servidor cria username e senha fortes, guarda as credenciais no dispositivo, mantém a sessão por um ano e recupera a identidade quando o banco gratuito reinicia. Nome de exibição e username continuam editáveis.
+- Conta oficial opcional com cargo global e visível `CREATOR` em todos os servidores existentes e futuros.
 
 ## Executar
 
@@ -66,6 +67,10 @@ TURN_CREDENTIAL=segredo
 ```
 
 O diretório `data/` contém contas, sessões, mensagens, projetos e anexos e está ignorado pelo Git. Faça backups dele e restrinja o acesso no servidor. Ajuste `MAX_UPLOAD_MB` e `MAX_USER_STORAGE_MB` conforme o espaço disponível. Um proxy reverso deve aceitar esse tamanho, limitar requisições e encerrar TLS. Para uso público amplo, troque o armazenamento de sinalização em memória por Redis e use um banco gerenciado.
+
+Convites pertencem ao servidor salvo no banco e não à versão do `.exe`. Mantendo o mesmo `DATA_DIR` e `PUBLIC_APP_URL`, o link continua válido após reinícios e atualizações até que o dono o renove. Em produção, aponte `DATA_DIR` para um volume persistente e inclua esse volume nos backups.
+
+Para criar a conta administrativa global sem publicar senha no repositório, execute `node scripts/generate-creator-credentials.mjs`, guarde a senha exibida e configure `CREATOR_USERNAME`, `CREATOR_PASSWORD_HASH` e `CREATOR_NAME` como variáveis secretas do serviço. A senha em texto não deve entrar no Git.
 
 ## Segurança
 

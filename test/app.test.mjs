@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { randomUUID } from 'node:crypto';
+import { randomUUID, scryptSync } from 'node:crypto';
 import { createApp } from '../server.mjs';
 
 async function appFixture(t, options = {}) {
@@ -77,6 +77,33 @@ test('upgrades an existing visitor without asking for another registration', asy
 test('rejects local addresses as public invitation URLs', () => {
   assert.throws(() => createApp({ publicUrl:'https://127.0.0.1' }), /domínio público/);
   assert.throws(() => createApp({ publicUrl:'https://localhost' }), /domínio público/);
+});
+test('keeps the configured CREATOR account in every existing and future server', async t => {
+  const salt='ab'.repeat(32),password='Creator!Teste2026',creatorPasswordHash=`${salt}:${scryptSync(password,salt,64).toString('hex')}`;
+  const {base}=await appFixture(t,{creatorUsername:'codestate-creator',creatorPasswordHash,creatorName:'CodeState Creator'}),owner=await account(base);
+  const ownerAuth={cookie:owner.cookie,'Content-Type':'application/json','X-Orbit-Request':'1','X-CSRF-Token':owner.data.csrf};
+  const created=await fetch(base+'/api/servers',{method:'POST',headers:ownerAuth,body:JSON.stringify({name:'Servidor Persistente'})}),serverId=(await created.json()).id;
+  assert.equal(created.status,201);
+  const login=await fetch(base+'/api/login',{method:'POST',headers:{'Content-Type':'application/json','X-Orbit-Request':'1'},body:JSON.stringify({username:'codestate-creator',password})});
+  assert.equal(login.status,200);const creatorCookie=login.headers.get('set-cookie').split(';')[0],creator=await (await fetch(base+'/api/bootstrap',{headers:{cookie:creatorCookie}})).json();
+  assert.ok(creator.servers.some(server=>server.id==='orbit'));
+  assert.ok(creator.servers.some(server=>server.id===serverId&&server.permissions.includes('administrator')));
+  const member=creator.members.find(item=>item.id==='codestate-creator'&&item.serverId===serverId);assert.ok(member.roles.some(role=>role.name==='CREATOR'));
+  const denied=await fetch(base+'/api/roles',{method:'POST',headers:ownerAuth,body:JSON.stringify({action:'assign',serverId,roleId:`${serverId}:creator`,userId:'codestate-creator',enabled:false})});
+  assert.equal(denied.status,400);
+});
+test('keeps servers and invitation tokens across restarts with the same data directory', async t => {
+  const dir=await mkdtemp(join(tmpdir(),'codestate-persist-'));let current;
+  t.after(async()=>{if(current)await current.close();await rm(dir,{recursive:true,force:true})});
+  current=createApp({dataDir:dir,requireCaptcha:false,publicUrl:'https://app.codestate.example'});await new Promise(resolve=>current.server.listen(0,'127.0.0.1',resolve));let base=`http://127.0.0.1:${current.server.address().port}`;
+  const owner=await guest(base),auth={cookie:owner.cookie,'Content-Type':'application/json','X-Orbit-Request':'1','X-CSRF-Token':owner.data.csrf};
+  const created=await fetch(base+'/api/servers',{method:'POST',headers:auth,body:JSON.stringify({name:'Servidor entre Versões'})}),serverId=(await created.json()).id;
+  const before=await (await fetch(base+`/api/invite?serverId=${serverId}`,{headers:{cookie:owner.cookie}})).json();
+  await current.close();current=null;
+  current=createApp({dataDir:dir,requireCaptcha:false,publicUrl:'https://app.codestate.example'});await new Promise(resolve=>current.server.listen(0,'127.0.0.1',resolve));base=`http://127.0.0.1:${current.server.address().port}`;
+  const login=await fetch(base+'/api/login',{method:'POST',headers:{'Content-Type':'application/json','X-Orbit-Request':'1'},body:JSON.stringify(owner.credentials)});assert.equal(login.status,200);const cookie=login.headers.get('set-cookie').split(';')[0];
+  const restored=await (await fetch(base+'/api/bootstrap',{headers:{cookie}})).json();assert.ok(restored.servers.some(server=>server.id===serverId));
+  const after=await (await fetch(base+`/api/invite?serverId=${serverId}`,{headers:{cookie}})).json();assert.equal(after.invite,before.invite);assert.equal(after.url,before.url);
 });
 test('requires the visual challenge before creating a visitor session', async t => {
   const { base } = await appFixture(t, { requireCaptcha:true });

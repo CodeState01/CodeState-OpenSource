@@ -16,6 +16,7 @@ const execFileAsync = promisify(execFile);
 const hash = value => createHash('sha256').update(value).digest('hex');
 const token = () => randomBytes(32).toString('hex');
 const id = () => randomUUID();
+const CREATOR_USER_ID = 'codestate-creator';
 const publicUser = u => ({ id: u.id, name: u.name, color: u.color, guest: !!u.guest, avatar: u.avatar || '', banner: u.banner || '' });
 const usernameWords = ['astro','byte','codigo','cometa','fluxo','nexo','pixel','quasar','vetor','zenite'];
 function generatedUsername() {
@@ -147,6 +148,9 @@ export function createApp(options = {}) {
     publicUrl: process.env.PUBLIC_APP_URL || '',
     maxUploadBytes: Number(process.env.MAX_UPLOAD_MB || 100) * 1024 * 1024,
     maxUserStorageBytes: Number(process.env.MAX_USER_STORAGE_MB || 1024) * 1024 * 1024,
+    creatorUsername: process.env.CREATOR_USERNAME || '',
+    creatorPasswordHash: process.env.CREATOR_PASSWORD_HASH || '',
+    creatorName: process.env.CREATOR_NAME || 'CodeState Creator',
     ...options,
   };
   const ollama = new URL(config.ollamaUrl);
@@ -204,6 +208,16 @@ export function createApp(options = {}) {
   if (!channelColumns.has('vfx')) run('ALTER TABLE channels ADD COLUMN vfx INTEGER NOT NULL DEFAULT 0');
   if (!channelColumns.has('read_only')) run('ALTER TABLE channels ADD COLUMN read_only INTEGER NOT NULL DEFAULT 0');
   if (!channelColumns.has('hidden')) run('ALTER TABLE channels ADD COLUMN hidden INTEGER NOT NULL DEFAULT 0');
+  const creatorEnabled = Boolean(config.creatorUsername || config.creatorPasswordHash);
+  if (creatorEnabled) {
+    check(config.creatorUsername && config.creatorPasswordHash, 500, 'Configure CREATOR_USERNAME e CREATOR_PASSWORD_HASH juntos.');
+    const creatorUsername = validUsername(config.creatorUsername);
+    check(/^[a-f0-9]{64}:[a-f0-9]{128}$/i.test(config.creatorPasswordHash), 500, 'CREATOR_PASSWORD_HASH inválido.');
+    const conflict = get('SELECT id FROM users WHERE username=? AND id<>?', creatorUsername, CREATOR_USER_ID);
+    check(!conflict, 500, 'CREATOR_USERNAME já pertence a outra conta.');
+    run('INSERT OR IGNORE INTO users (id,name,username,password,color,guest,terms_at) VALUES (?,?,?,?,?,0,?)', CREATOR_USER_ID, config.creatorName, creatorUsername, config.creatorPasswordHash, 'creator', Date.now());
+    run('UPDATE users SET name=?,username=?,password=?,color=?,guest=0,terms_at=? WHERE id=?', config.creatorName, creatorUsername, config.creatorPasswordHash, 'creator', Date.now(), CREATOR_USER_ID);
+  }
   if (!get('SELECT id FROM servers WHERE id=?', 'orbit')) {
     run('INSERT INTO users (id,name,color,guest) VALUES (?,?,?,0)', 'orbit-guide', 'Orbit Guide', 'orange');
     run('INSERT INTO servers (id,name,description,owner_id,invite,public) VALUES (?,?,?,?,?,?)', 'orbit', 'CodeState', 'Comunicação e desenvolvimento em um só lugar.', 'orbit-guide', null, 1);
@@ -234,10 +248,16 @@ export function createApp(options = {}) {
   run('INSERT OR IGNORE INTO messages VALUES (?,?,?,?,?)','codestate-beta','geral','orbit-guide','CodeState AI está em Beta. Modelos gratuitos podem demorar, errar e não possuem o mesmo nível de modelos avançados. Aguarde a resposta terminar antes de enviar outra pergunta.',introTime+60000);
   run('INSERT OR IGNORE INTO messages VALUES (?,?,?,?,?)','codestate-rules','geral','orbit-guide','Regras essenciais: respeite as pessoas, não publique conteúdo ilegal, não compartilhe credenciais e só envie arquivos que você tem direito de usar. Consulte Termos e regras no menu de ajuda.',introTime+120000);
   for(const serverRow of all('SELECT id,owner_id FROM servers')){
-    const ownerRole=`${serverRow.id}:owner`,memberRole=`${serverRow.id}:member`;
+    const ownerRole=`${serverRow.id}:owner`,memberRole=`${serverRow.id}:member`,creatorRole=`${serverRow.id}:creator`;
     run('INSERT OR IGNORE INTO roles VALUES (?,?,?,?,?,?)',ownerRole,serverRow.id,'Dono','#ffffff',JSON.stringify(['administrator']),100);
     run('INSERT OR IGNORE INTO roles VALUES (?,?,?,?,?,?)',memberRole,serverRow.id,'Membro','#9ca3af',JSON.stringify([]),1);
     if(serverRow.owner_id)run('INSERT OR IGNORE INTO member_roles VALUES (?,?,?)',serverRow.id,serverRow.owner_id,ownerRole);
+    if(creatorEnabled){
+      run('INSERT OR IGNORE INTO roles VALUES (?,?,?,?,?,?)',creatorRole,serverRow.id,'CREATOR','#f4c76b',JSON.stringify(['administrator']),90);
+      run('UPDATE roles SET name=?,color=?,permissions=?,position=? WHERE id=?','CREATOR','#f4c76b',JSON.stringify(['administrator']),90,creatorRole);
+      run('INSERT OR IGNORE INTO members VALUES (?,?)',serverRow.id,CREATOR_USER_ID);
+      run('INSERT OR IGNORE INTO member_roles VALUES (?,?,?)',serverRow.id,CREATOR_USER_ID,creatorRole);
+    }
     for(const row of all('SELECT user_id FROM members WHERE server_id=?',serverRow.id))if(!get('SELECT 1 FROM member_roles WHERE server_id=? AND user_id=?',serverRow.id,row.user_id))run('INSERT INTO member_roles VALUES (?,?,?)',serverRow.id,row.user_id,memberRole);
   }
   const clients = new Map(), calls = new Map(), captchas = new Map(), limits = new Map(), aiBusy = new Set();
@@ -516,10 +536,12 @@ export function createApp(options = {}) {
           run('INSERT INTO members VALUES (?,?)', serverId, user.id);
           run('INSERT INTO channels (id,server_id,name,type,description,font,vfx) VALUES (?,?,?,?,?,?,?)', id(), serverId, 'geral', 'text', 'O começo de uma boa conversa.','inherit',0);
           run('INSERT INTO channels (id,server_id,name,type,description,font,vfx) VALUES (?,?,?,?,?,?,?)', id(), serverId, 'Lounge', 'voice', 'Converse com seu time.','inherit',0);
-          const ownerRole=`${serverId}:owner`,memberRole=`${serverId}:member`;
+          const ownerRole=`${serverId}:owner`,memberRole=`${serverId}:member`,creatorRole=`${serverId}:creator`;
           run('INSERT INTO roles VALUES (?,?,?,?,?,?)',ownerRole,serverId,'Dono','#ffffff',JSON.stringify(['administrator']),100);
           run('INSERT INTO roles VALUES (?,?,?,?,?,?)',memberRole,serverId,'Membro','#9ca3af',JSON.stringify([]),1);
-          run('INSERT INTO member_roles VALUES (?,?,?)',serverId,user.id,ownerRole);db.exec('COMMIT');
+          run('INSERT INTO member_roles VALUES (?,?,?)',serverId,user.id,ownerRole);
+          if(creatorEnabled){run('INSERT INTO roles VALUES (?,?,?,?,?,?)',creatorRole,serverId,'CREATOR','#f4c76b',JSON.stringify(['administrator']),90);run('INSERT INTO members VALUES (?,?)',serverId,CREATOR_USER_ID);run('INSERT INTO member_roles VALUES (?,?,?)',serverId,CREATOR_USER_ID,creatorRole)}
+          db.exec('COMMIT');
         } catch (e) { db.exec('ROLLBACK'); throw e; }
         return json(201, { id: serverId });
       }
@@ -554,7 +576,7 @@ export function createApp(options = {}) {
       if (url.pathname === '/api/roles' && req.method === 'POST') {
         const b=await body(req),serverId=string(b.serverId,1,80,'Servidor');check(member(user.id,serverId),403,'Acesso negado.');check(can(user.id,serverId,'manage_roles'),403,'Você não pode gerenciar cargos.');
         if(b.action==='create'){check(all('SELECT id FROM roles WHERE server_id=?',serverId).length<20,409,'Limite de 20 cargos atingido.');const name=string(b.name,2,30,'Cargo'),color=String(b.color||'');check(/^#[0-9a-f]{6}$/i.test(color),400,'Cor inválida.');const allowed=['manage_channels','manage_server','manage_messages','invite_members'],permissions=Array.isArray(b.permissions)?[...new Set(b.permissions.filter(item=>allowed.includes(item)))]:[];const roleId=id();run('INSERT INTO roles VALUES (?,?,?,?,?,?)',roleId,serverId,name,color,JSON.stringify(permissions),50);emitServer(serverId,'refresh',{});return json(201,{id:roleId})}
-        if(b.action==='assign'){const role=get('SELECT * FROM roles WHERE id=? AND server_id=?',b.roleId,serverId);check(role&&!role.id.endsWith(':owner'),400,'Cargo inválido.');check(member(b.userId,serverId),400,'Usuário inválido.');if(b.enabled)run('INSERT OR IGNORE INTO member_roles VALUES (?,?,?)',serverId,b.userId,role.id);else run('DELETE FROM member_roles WHERE server_id=? AND user_id=? AND role_id=?',serverId,b.userId,role.id);emitServer(serverId,'refresh',{});return json(200,{ok:true})}
+        if(b.action==='assign'){const role=get('SELECT * FROM roles WHERE id=? AND server_id=?',b.roleId,serverId);check(role&&!role.id.endsWith(':owner')&&!role.id.endsWith(':creator'),400,'Cargo inválido.');check(member(b.userId,serverId),400,'Usuário inválido.');if(b.enabled)run('INSERT OR IGNORE INTO member_roles VALUES (?,?,?)',serverId,b.userId,role.id);else run('DELETE FROM member_roles WHERE server_id=? AND user_id=? AND role_id=?',serverId,b.userId,role.id);emitServer(serverId,'refresh',{});return json(200,{ok:true})}
         throw new HttpError(400,'Ação de cargo inválida.');
       }
       if (url.pathname === '/api/channels' && req.method === 'POST') {
