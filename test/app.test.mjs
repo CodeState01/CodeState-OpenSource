@@ -106,6 +106,14 @@ test('keeps servers and invitation tokens across restarts with the same data dir
   const restored=await (await fetch(base+'/api/bootstrap',{headers:{cookie}})).json();assert.ok(restored.servers.some(server=>server.id===serverId));
   const after=await (await fetch(base+`/api/invite?serverId=${serverId}`,{headers:{cookie}})).json();assert.equal(after.invite,before.invite);assert.equal(after.url,before.url);
 });
+test('lists public featured servers and lets an account join one', async t => {
+  const {base}=await appFixture(t),accountData=await guest(base),{cookie}=accountData;
+  const discovered=await (await fetch(base+'/api/discover')).json();
+  assert.ok(discovered.servers.length>=4);assert.ok(discovered.servers.some(server=>server.name==='Frontend Lab'&&server.featured));
+  const target=discovered.servers.find(server=>server.name==='Frontend Lab');
+  const joined=await fetch(base+'/api/join',{method:'POST',headers:{cookie,'Content-Type':'application/json','X-Orbit-Request':'1','X-CSRF-Token':accountData.data.csrf},body:JSON.stringify({invite:target.invite})});
+  assert.equal(joined.status,200);const boot=await (await fetch(base+'/api/bootstrap',{headers:{cookie}})).json();assert.ok(boot.servers.some(server=>server.id===target.id));
+});
 test('requires the visual challenge before creating a visitor session', async t => {
   const { base } = await appFixture(t, { requireCaptcha:true });
   const challenge = await (await fetch(base + '/api/captcha')).json();

@@ -204,6 +204,7 @@ export function createApp(options = {}) {
   const serverColumns = new Set(all('PRAGMA table_info(servers)').map(column => column.name));
   if (!serverColumns.has('icon')) run("ALTER TABLE servers ADD COLUMN icon TEXT NOT NULL DEFAULT ''");
   if (!serverColumns.has('font')) run("ALTER TABLE servers ADD COLUMN font TEXT NOT NULL DEFAULT 'inter'");
+  if (!serverColumns.has('featured')) run('ALTER TABLE servers ADD COLUMN featured INTEGER NOT NULL DEFAULT 0');
   const channelColumns = new Set(all('PRAGMA table_info(channels)').map(column => column.name));
   if (!channelColumns.has('font')) run("ALTER TABLE channels ADD COLUMN font TEXT NOT NULL DEFAULT 'inherit'");
   if (!channelColumns.has('vfx')) run('ALTER TABLE channels ADD COLUMN vfx INTEGER NOT NULL DEFAULT 0');
@@ -248,6 +249,18 @@ export function createApp(options = {}) {
   run('INSERT OR IGNORE INTO messages VALUES (?,?,?,?,?)','codestate-welcome','geral','orbit-guide','Bem-vindo ao CodeState Beta.\nCrie sua conta e depois crie um servidor para conversar, programar, enviar arquivos e chamar seus amigos.',introTime);
   run('INSERT OR IGNORE INTO messages VALUES (?,?,?,?,?)','codestate-beta','geral','orbit-guide','CodeState AI está em Beta. Modelos gratuitos podem demorar, errar e não possuem o mesmo nível de modelos avançados. Aguarde a resposta terminar antes de enviar outra pergunta.',introTime+60000);
   run('INSERT OR IGNORE INTO messages VALUES (?,?,?,?,?)','codestate-rules','geral','orbit-guide','Regras essenciais: respeite as pessoas, não publique conteúdo ilegal, não compartilhe credenciais e só envie arquivos que você tem direito de usar. Consulte Termos e regras no menu de ajuda.',introTime+120000);
+  const featuredServers=[
+    ['codestate-comunidade','CodeState Comunidade','Avisos, ajuda e projetos da comunidade CodeState.'],
+    ['frontend-lab','Frontend Lab','Interfaces, acessibilidade e desenvolvimento web.'],
+    ['python-brasil','Python Brasil','Automação, dados e aprendizado colaborativo em Python.']
+  ];
+  for(const [featuredId,featuredName,featuredDescription] of featuredServers){
+    if(!get('SELECT id FROM servers WHERE id=?',featuredId)){
+      run('INSERT INTO servers (id,name,description,owner_id,invite,public,featured) VALUES (?,?,?,?,?,1,1)',featuredId,featuredName,featuredDescription,'orbit-guide',randomBytes(18).toString('base64url'));
+      run('INSERT OR IGNORE INTO members VALUES (?,?)',featuredId,'orbit-guide');
+      run('INSERT OR IGNORE INTO channels (id,server_id,name,type,description) VALUES (?,?,?,?,?)',`${featuredId}:geral`,featuredId,'geral','text','Converse e compartilhe conhecimento.');
+    }
+  }
   for(const serverRow of all('SELECT id,owner_id FROM servers')){
     const ownerRole=`${serverRow.id}:owner`,memberRole=`${serverRow.id}:member`,creatorRole=`${serverRow.id}:creator`;
     run('INSERT OR IGNORE INTO roles VALUES (?,?,?,?,?,?)',ownerRole,serverRow.id,'Dono','#ffffff',JSON.stringify(['administrator']),100);
@@ -385,6 +398,13 @@ export function createApp(options = {}) {
       }
       const ip = req.socket.remoteAddress || 'unknown';
       if (url.pathname === '/api/health' && req.method === 'GET') return json(200, { status: 'ok', identity:'automatic-v1' });
+      if (url.pathname === '/api/discover' && req.method === 'GET') {
+        const servers=all(`SELECT s.id,s.name,s.description,s.icon,s.invite,s.featured,COUNT(m.user_id) AS members
+          FROM servers s LEFT JOIN members m ON m.server_id=s.id
+          WHERE s.public=1 GROUP BY s.id ORDER BY s.featured DESC,members DESC,s.name COLLATE NOCASE LIMIT 30`)
+          .map(s=>({id:s.id,name:s.name,description:s.description,icon:s.icon||'',invite:s.invite,members:Number(s.members||0),featured:!!s.featured}));
+        return json(200,{servers});
+      }
       if (url.pathname === '/api/captcha' && req.method === 'GET') {
         rate('captcha:'+ip,30,3600000);const alphabet='ABCDEFGHJKLMNPQRSTUVWXYZ23456789';let answer='';for(let i=0;i<6;i++)answer+=alphabet[randomBytes(1)[0]%alphabet.length];const challengeId=id();captchas.set(challengeId,{answer:hash(answer),expires:Date.now()+120000,ip});
         for(const [key,value] of captchas)if(value.expires<Date.now())captchas.delete(key);
