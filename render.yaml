@@ -1,0 +1,16 @@
+services:
+  - type: web
+    name: codestate-community
+    runtime: node
+    plan: free
+    buildCommand: npm ci --omit=dev
+    startCommand: node scripts/start-public.mjs
+    healthCheckPath: /
+    autoDeployTrigger: commit
+    envVars:
+      - key: NODE_VERSION
+        value: 24.14.1
+      - key: MAX_UPLOAD_MB
+        value: 25
+      - key: MAX_USER_STORAGE_MB
+        value: 100

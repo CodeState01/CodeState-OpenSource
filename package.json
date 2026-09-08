@@ -1,0 +1,65 @@
+{
+  "name": "codestate",
+  "version": "2.6.0",
+  "private": true,
+  "type": "module",
+  "main": "desktop/main.cjs",
+  "description": "Chat em tempo real, playground HTML/CSS, IA e chamadas WebRTC.",
+  "license": "UNLICENSED",
+  "engines": {
+    "node": ">=24.0.0 <25"
+  },
+  "scripts": {
+    "start": "node --env-file-if-exists=.env server.mjs",
+    "start:public": "node scripts/start-public.mjs",
+    "dev": "node --watch --env-file-if-exists=.env server.mjs",
+    "test": "node --test test/*.test.mjs",
+    "check": "node --check server.mjs && node --check scripts/start-public.mjs && node --check public/app.js && node --check public/calls.js && node --check desktop/main.cjs",
+    "desktop": "electron .",
+    "build:win": "electron-builder --win nsis --x64"
+  },
+  "devDependencies": {
+    "electron": "^37.10.3",
+    "electron-builder": "26.15.3"
+  },
+  "build": {
+    "appId": "studio.orbit.desktop",
+    "productName": "CodeState",
+    "asar": true,
+    "electronDist": "vendor/electron-dist",
+    "files": [
+      "desktop/**/*",
+      "public/**/*",
+      "scripts/**/*",
+      "server.mjs",
+      "package.json",
+      "node_modules/electron-updater/**/*",
+      "node_modules/builder-util-runtime/**/*",
+      "node_modules/lazy-val/**/*",
+      "node_modules/lodash.isequal/**/*",
+      "node_modules/sax/**/*",
+      "node_modules/tiny-typed-emitter/**/*"
+    ],
+    "publish": [{ "provider": "github", "owner": "CodeState01", "repo": "codestate", "releaseType": "release" }],
+    "directories": {
+      "output": "dist",
+      "buildResources": "desktop"
+    },
+    "win": {
+      "icon": "desktop/icon.ico",
+      "artifactName": "CodeState-${version}-${arch}.${ext}"
+    },
+    "portable": {
+      "artifactName": "CodeState-Portable-${version}-${arch}.${ext}"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true
+    }
+  },
+  "dependencies": {
+    "electron-updater": "^6.8.9"
+  }
+}
