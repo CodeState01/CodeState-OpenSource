@@ -87,8 +87,9 @@ test('keeps the configured CREATOR account in every existing and future server',
   const login=await fetch(base+'/api/login',{method:'POST',headers:{'Content-Type':'application/json','X-Orbit-Request':'1'},body:JSON.stringify({username:'codestate-creator',password})});
   assert.equal(login.status,200);const creatorCookie=login.headers.get('set-cookie').split(';')[0],creator=await (await fetch(base+'/api/bootstrap',{headers:{cookie:creatorCookie}})).json();
   assert.ok(creator.servers.some(server=>server.id==='orbit'));
+  assert.equal(creator.user.title,'Owner of app');
   assert.ok(creator.servers.some(server=>server.id===serverId&&server.permissions.includes('administrator')));
-  const member=creator.members.find(item=>item.id==='codestate-creator'&&item.serverId===serverId);assert.ok(member.roles.some(role=>role.name==='CREATOR'));
+  const member=creator.members.find(item=>item.id==='codestate-creator'&&item.serverId===serverId);assert.equal(member.title,'Owner of app');assert.ok(member.roles.some(role=>role.name==='CREATOR'));
   const denied=await fetch(base+'/api/roles',{method:'POST',headers:ownerAuth,body:JSON.stringify({action:'assign',serverId,roleId:`${serverId}:creator`,userId:'codestate-creator',enabled:false})});
   assert.equal(denied.status,400);
 });

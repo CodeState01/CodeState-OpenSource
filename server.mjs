@@ -17,7 +17,7 @@ const hash = value => createHash('sha256').update(value).digest('hex');
 const token = () => randomBytes(32).toString('hex');
 const id = () => randomUUID();
 const CREATOR_USER_ID = 'codestate-creator';
-const publicUser = u => ({ id: u.id, name: u.name, color: u.color, guest: !!u.guest, avatar: u.avatar || '', banner: u.banner || '' });
+const publicUser = u => ({ id: u.id, name: u.name, color: u.color, guest: !!u.guest, avatar: u.avatar || '', banner: u.banner || '', title: u.platform_title || '' });
 const usernameWords = ['astro','byte','codigo','cometa','fluxo','nexo','pixel','quasar','vetor','zenite'];
 function generatedUsername() {
   return `${usernameWords[randomInt(usernameWords.length)]}-${usernameWords[randomInt(usernameWords.length)]}-${randomBytes(3).toString('hex')}`;
@@ -200,6 +200,7 @@ export function createApp(options = {}) {
   if (!userColumns.has('avatar')) run("ALTER TABLE users ADD COLUMN avatar TEXT NOT NULL DEFAULT ''");
   if (!userColumns.has('banner')) run("ALTER TABLE users ADD COLUMN banner TEXT NOT NULL DEFAULT ''");
   if (!userColumns.has('terms_at')) run('ALTER TABLE users ADD COLUMN terms_at INTEGER NOT NULL DEFAULT 0');
+  if (!userColumns.has('platform_title')) run("ALTER TABLE users ADD COLUMN platform_title TEXT NOT NULL DEFAULT ''");
   const serverColumns = new Set(all('PRAGMA table_info(servers)').map(column => column.name));
   if (!serverColumns.has('icon')) run("ALTER TABLE servers ADD COLUMN icon TEXT NOT NULL DEFAULT ''");
   if (!serverColumns.has('font')) run("ALTER TABLE servers ADD COLUMN font TEXT NOT NULL DEFAULT 'inter'");
@@ -216,7 +217,7 @@ export function createApp(options = {}) {
     const conflict = get('SELECT id FROM users WHERE username=? AND id<>?', creatorUsername, CREATOR_USER_ID);
     check(!conflict, 500, 'CREATOR_USERNAME já pertence a outra conta.');
     run('INSERT OR IGNORE INTO users (id,name,username,password,color,guest,terms_at) VALUES (?,?,?,?,?,0,?)', CREATOR_USER_ID, config.creatorName, creatorUsername, config.creatorPasswordHash, 'creator', Date.now());
-    run('UPDATE users SET name=?,username=?,password=?,color=?,guest=0,terms_at=? WHERE id=?', config.creatorName, creatorUsername, config.creatorPasswordHash, 'creator', Date.now(), CREATOR_USER_ID);
+    run('UPDATE users SET name=?,username=?,password=?,color=?,guest=0,terms_at=?,platform_title=? WHERE id=?', config.creatorName, creatorUsername, config.creatorPasswordHash, 'creator', Date.now(), 'Owner of app', CREATOR_USER_ID);
   }
   if (!get('SELECT id FROM servers WHERE id=?', 'orbit')) {
     run('INSERT INTO users (id,name,color,guest) VALUES (?,?,?,0)', 'orbit-guide', 'Orbit Guide', 'orange');
@@ -338,7 +339,7 @@ export function createApp(options = {}) {
     const servers = all('SELECT s.* FROM servers s JOIN members m ON s.id=m.server_id WHERE m.user_id=?', user.id).map(s => ({ id: s.id, name: s.name, description: s.description, ownerId: s.owner_id, public: !!s.public, icon:s.icon||'', font:s.font||'inter',permissions:permissionsFor(user.id,s.id) }));
     const channels = all('SELECT c.* FROM channels c JOIN members m ON c.server_id=m.server_id WHERE m.user_id=? AND COALESCE(c.hidden,0)=0 ORDER BY c.rowid', user.id);
     const onlineIds = new Set([...clients.values()].map(c => c.userId)); onlineIds.add(user.id);
-    const members = all('SELECT u.id,u.name,u.username,u.color,u.guest,u.avatar,u.banner,m.server_id FROM users u JOIN members m ON m.user_id=u.id WHERE m.server_id IN (SELECT server_id FROM members WHERE user_id=?)', user.id).map(u => ({ ...publicUser(u), username:u.username||'',serverId: u.server_id, online: onlineIds.has(u.id), bot: u.id === 'orbit-guide', roles:rolesFor(u.id,u.server_id).map(role=>({id:role.id,name:role.name,color:role.color})) }));
+    const members = all('SELECT u.id,u.name,u.username,u.color,u.guest,u.avatar,u.banner,u.platform_title,m.server_id FROM users u JOIN members m ON m.user_id=u.id WHERE m.server_id IN (SELECT server_id FROM members WHERE user_id=?)', user.id).map(u => ({ ...publicUser(u), username:u.username||'',serverId: u.server_id, online: onlineIds.has(u.id), bot: u.id === 'orbit-guide', roles:rolesFor(u.id,u.server_id).map(role=>({id:role.id,name:role.name,color:role.color})) }));
     const aiProviders = [
       { id: 'demo', name: 'Demonstração', free: true, available: true },
       { id: 'ollama', name: `Ollama · ${config.ollamaModel}`, free: true, available: false, local: true, reason: 'Verificando Ollama…' },
