@@ -3,6 +3,7 @@ import { spawnSync } from 'node:child_process';
 
 const [repo, mode = 'source', readmePath] = process.argv.slice(2);
 if (!repo) throw new Error('Uso: node scripts/sync-github-repo.mjs owner/repo [source|readme] [arquivo]');
+const version = JSON.parse(readFileSync('package.json', 'utf8')).version;
 
 function command(program, args, input) {
   const result = spawnSync(program, args, { encoding: 'utf8', input, maxBuffer: 20 * 1024 * 1024 });
@@ -40,6 +41,6 @@ for (const file of files) {
   process.stdout.write(`Enviado: ${file.path}\n`);
 }
 const createdTree = api(`/repos/${repo}/git/trees`, 'POST', mode === 'readme' ? { tree } : { base_tree: previous.tree.sha, tree });
-const commit = api(`/repos/${repo}/git/commits`, 'POST', { message: mode === 'readme' ? 'docs: keep public repository download-only' : 'release: CodeState 2.6.0', tree: createdTree.sha, parents: mode === 'readme' ? [] : [parent] });
+const commit = api(`/repos/${repo}/git/commits`, 'POST', { message: mode === 'readme' ? 'docs: keep public repository download-only' : `release: CodeState ${version}`, tree: createdTree.sha, parents: mode === 'readme' ? [] : [parent] });
 api(`/repos/${repo}/git/refs/heads/main`, 'PATCH', { sha: commit.sha, force: mode === 'readme' });
 process.stdout.write(`Atualizado ${repo}: ${commit.sha}\n`);

@@ -16,7 +16,7 @@ Um espaço colaborativo em português com chat em tempo real, servidores e canai
 - Área de apoio para Skills, Agents e MCPs, com contexto enviado à IA sem expor segredos no navegador.
 - CodeState AI com memória persistente por usuário, OpenAI e três opções gratuitas: Ollama local, OpenRouter Free e Groq.
 - Perfil editável com nome, foto e banner em PNG, JPG, WebP ou GIF animado.
-- Chamadas WebRTC com microfone, câmera e compartilhamento de tela; o `.exe` usa o seletor nativo de tela do sistema.
+- Chamadas WebRTC com microfone, câmera e compartilhamento de tela; se a conexão direta de tela for bloqueada entre redes, o aplicativo usa quadros comprimidos por HTTPS sem armazená-los. O `.exe` usa o seletor nativo de tela do sistema.
 - Interface responsiva, navegação por teclado, loaders personalizados e tema escuro em português.
 - Canal inicial de apresentação somente leitura, aceite obrigatório dos Termos e avisos claros sobre as limitações e a espera da IA Beta.
 - Conta automática no primeiro acesso: o servidor cria username e senha fortes, guarda as credenciais no dispositivo, mantém a sessão por um ano e recupera a identidade quando o banco gratuito reinicia. Nome de exibição e username continuam editáveis.
@@ -53,7 +53,7 @@ O arquivo `render.yaml` prepara uma implantação gratuita chamada `codestate-co
 
 O aplicativo instalado usa `https://codestate-community.onrender.com` por padrão. Argumentos `--server` e `CODESTATE_SERVER_URL` continuam tendo prioridade para ambientes próprios.
 
-Use HTTPS e configure `APP_ORIGIN` com a origem exata. Defina um servidor TURN para que chamadas funcionem melhor entre redes corporativas, celulares e NATs restritivos:
+Use HTTPS e configure `APP_ORIGIN` com a origem exata. A tela possui compatibilidade HTTPS com quadros comprimidos que não são armazenados. Defina um servidor TURN para áudio, câmera e tela em alta qualidade entre redes corporativas, celulares e NATs restritivos:
 
 ```env
 NODE_ENV=production

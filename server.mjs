@@ -670,6 +670,19 @@ export function createApp(options = {}) {
         const b = await body(req); check(!calls.has(b.clientId) || calls.get(b.clientId).sessionHash === user.hash, 403, 'Acesso negado.');
         leaveCall(b.clientId); return json(200, { ok: true });
       }
+      if (url.pathname === '/api/call/screen-frame' && req.method === 'POST') {
+        rate('screen-frame:' + user.id, 90, 60000);const b=await body(req),caller=calls.get(b.clientId);
+        check(caller?.sessionHash===user.hash,403,'Entre na chamada antes de compartilhar a tela.');
+        const match=typeof b.frame==='string'&&/^data:image\/webp;base64,([a-z0-9+/=]+)$/i.exec(b.frame),decoded=match?Buffer.from(match[1],'base64'):null;
+        check(decoded&&decoded.length<=360000&&decoded.subarray(0,4).toString()==='RIFF'&&decoded.subarray(8,12).toString()==='WEBP',400,'Quadro de tela inválido ou muito grande.');
+        for(const [peerId,peer] of calls)if(peerId!==b.clientId&&peer.channelId===caller.channelId&&clients.has(peerId))send(clients.get(peerId).res,'screen-frame',{clientId:b.clientId,frame:b.frame});
+        return json(202,{ok:true});
+      }
+      if (url.pathname === '/api/call/screen-stop' && req.method === 'POST') {
+        const b=await body(req),caller=calls.get(b.clientId);check(caller?.sessionHash===user.hash,403,'Chamada indisponível.');
+        for(const [peerId,peer] of calls)if(peerId!==b.clientId&&peer.channelId===caller.channelId&&clients.has(peerId))send(clients.get(peerId).res,'screen-stopped',{clientId:b.clientId});
+        return json(200,{ok:true});
+      }
       if (url.pathname === '/api/signal' && req.method === 'POST') {
         rate('signal:' + user.id, 500, 60000); const b = await body(req), caller = calls.get(b.clientId), target = calls.get(b.target);
         check(caller?.sessionHash === user.hash && target && target.channelId === caller.channelId && clients.has(b.target), 403, 'Participante indisponível.');

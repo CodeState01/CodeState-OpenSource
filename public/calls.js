@@ -1,7 +1,7 @@
 export class OrbitCalls {
-  constructor({ api, clientId, onChange, onError }) {
+  constructor({ api, clientId, onChange, onFrame, onScreenStopped, onError }) {
     this.api=api;this.clientId=clientId;this.onChange=onChange;this.onError=onError;this.peers=new Map();this.localStream=null;this.channel=null;this.user=null;
-    this.mic=true;this.camera=false;this.screen=false;this.config=null;this.cameraTrack=null;this.screenTrack=null;this.cameraBeforeScreen=false;
+    this.onFrame=onFrame;this.onScreenStopped=onScreenStopped;this.mic=true;this.camera=false;this.screen=false;this.config=null;this.cameraTrack=null;this.screenTrack=null;this.cameraBeforeScreen=false;this.fallbackTimer=null;this.fallbackVideo=null;this.fallbackCanvas=null;this.lastFallbackFrame='';this.sendingFrame=false;
   }
   async join(channel,user,withVideo=false){
     if(!navigator.mediaDevices)throw new Error('Chamadas não estão disponíveis neste navegador.');if(this.channel)await this.leave();this.channel=channel;this.user=user;
@@ -25,6 +25,8 @@ export class OrbitCalls {
   }
   send(target,signal){return this.api('/api/signal',{method:'POST',body:{clientId:this.clientId,target,signal}})}
   dropPeer(peerId){const item=this.peers.get(peerId);if(item){clearTimeout(item.disconnectedTimer);item.pc.close()}this.peers.delete(peerId);this.onChange()}
+  async receiveScreenFrame({clientId,frame}){const entry=this.peers.get(clientId);if(!entry)return;entry.fallbackFrame=frame;let frames=0;try{for(const report of (await entry.pc.getStats()).values())if(report.type==='inbound-rtp'&&report.kind==='video')frames+=report.framesDecoded||0}catch{}const now=Date.now(),previous=entry.videoStats;entry.videoStats={frames,at:now};entry.fallbackVisible=!(previous&&frames>previous.frames&&now-previous.at<2500);entry.fallbackVisible?this.onFrame?.(clientId,frame):this.onScreenStopped?.(clientId)}
+  receiveScreenStopped({clientId}){const entry=this.peers.get(clientId);if(entry){entry.fallbackFrame='';entry.fallbackVisible=false;entry.videoStats=null}this.onScreenStopped?.(clientId)}
   async toggleMic(){this.mic=!this.mic;for(const track of this.localStream?.getAudioTracks()||[])track.enabled=this.mic;this.onChange()}
   async toggleCamera(){
     if(!this.localStream)return;if(!this.cameraTrack||this.cameraTrack.readyState==='ended'){try{this.cameraTrack=(await navigator.mediaDevices.getUserMedia({video:true})).getVideoTracks()[0]}catch{throw new Error('Não foi possível acessar sua câmera.')}if(!this.screen){this.localStream.addTrack(this.cameraTrack);await this.replaceForPeers('video',this.cameraTrack)}this.cameraTrack.enabled=true}else this.cameraTrack.enabled=!this.cameraTrack.enabled;
@@ -37,13 +39,19 @@ export class OrbitCalls {
   }
   async shareScreen(){
     if(!this.localStream)return;if(this.screen){await this.stopScreen();return}let display;try{display=await navigator.mediaDevices.getDisplayMedia({video:true,audio:false})}catch(error){if(error.name!=='NotAllowedError')throw new Error('Não foi possível compartilhar sua tela.');return}
-    this.screenTrack=display.getVideoTracks()[0];this.screenTrack.contentHint='detail';this.screenTrack._orbitScreen=true;this.cameraBeforeScreen=!!this.cameraTrack?.enabled;if(this.cameraTrack&&this.localStream.getTracks().includes(this.cameraTrack))this.localStream.removeTrack(this.cameraTrack);this.localStream.addTrack(this.screenTrack);await this.replaceForPeers('video',this.screenTrack);this.screenTrack.onended=()=>this.stopScreen().catch(this.onError);this.screen=true;this.camera=false;this.onChange();
+    this.screenTrack=display.getVideoTracks()[0];this.screenTrack.contentHint='detail';this.screenTrack._orbitScreen=true;this.cameraBeforeScreen=!!this.cameraTrack?.enabled;if(this.cameraTrack&&this.localStream.getTracks().includes(this.cameraTrack))this.localStream.removeTrack(this.cameraTrack);this.localStream.addTrack(this.screenTrack);await this.replaceForPeers('video',this.screenTrack);this.screenTrack.onended=()=>this.stopScreen().catch(this.onError);this.screen=true;this.camera=false;this.startScreenFallback();this.onChange();
   }
+  startScreenFallback(){
+    this.stopScreenFallback(false);const video=document.createElement('video');video.muted=true;video.playsInline=true;video.srcObject=new MediaStream([this.screenTrack]);const canvas=document.createElement('canvas');this.fallbackVideo=video;this.fallbackCanvas=canvas;video.play().catch(()=>{});
+    const tick=async()=>{if(!this.screen||this.screenTrack?.readyState!=='live')return;if(!this.sendingFrame&&video.videoWidth&&video.videoHeight){this.sendingFrame=true;try{const width=Math.min(960,video.videoWidth),height=Math.max(1,Math.round(video.videoHeight*width/video.videoWidth));if(canvas.width!==width||canvas.height!==height){canvas.width=width;canvas.height=height}canvas.getContext('2d',{alpha:false}).drawImage(video,0,0,width,height);const frame=canvas.toDataURL('image/webp',.58);if(frame!==this.lastFallbackFrame&&frame.length<480000){await this.api('/api/call/screen-frame',{method:'POST',body:{clientId:this.clientId,frame}});this.lastFallbackFrame=frame}}catch{}finally{this.sendingFrame=false}}this.fallbackTimer=setTimeout(tick,900)};
+    this.fallbackTimer=setTimeout(tick,250);
+  }
+  stopScreenFallback(notify=true){clearTimeout(this.fallbackTimer);this.fallbackTimer=null;if(this.fallbackVideo){this.fallbackVideo.pause();this.fallbackVideo.srcObject=null}this.fallbackVideo=null;this.fallbackCanvas=null;this.lastFallbackFrame='';this.sendingFrame=false;if(notify&&this.channel)this.api('/api/call/screen-stop',{method:'POST',body:{clientId:this.clientId}}).catch(()=>{})}
   async stopScreen(){
-    const track=this.screenTrack;if(track){track.onended=null;track.stop();this.localStream?.removeTrack(track)}this.screenTrack=null;this.screen=false;
+    this.stopScreenFallback();const track=this.screenTrack;if(track){track.onended=null;track.stop();this.localStream?.removeTrack(track)}this.screenTrack=null;this.screen=false;
     if(this.cameraTrack&&this.cameraTrack.readyState==='live'){this.cameraTrack.enabled=this.cameraBeforeScreen;if(!this.localStream.getTracks().includes(this.cameraTrack))this.localStream.addTrack(this.cameraTrack);await this.replaceForPeers('video',this.cameraTrack);this.camera=this.cameraTrack.enabled}else{await this.replaceForPeers('video',null);this.camera=false}this.onChange();
   }
   async leave(){
-    if(!this.channel)return;try{await this.api('/api/call/leave',{method:'POST',body:{clientId:this.clientId}})}catch{}for(const {pc,disconnectedTimer} of this.peers.values()){clearTimeout(disconnectedTimer);pc.close()}this.peers.clear();const tracks=new Set([...(this.localStream?.getTracks()||[]),this.cameraTrack,this.screenTrack].filter(Boolean));for(const track of tracks)track.stop();this.localStream=null;this.cameraTrack=null;this.screenTrack=null;this.channel=null;this.camera=false;this.screen=false;this.mic=true;this.onChange();
+    if(!this.channel)return;this.stopScreenFallback(false);try{await this.api('/api/call/leave',{method:'POST',body:{clientId:this.clientId}})}catch{}for(const {pc,disconnectedTimer} of this.peers.values()){clearTimeout(disconnectedTimer);pc.close()}this.peers.clear();const tracks=new Set([...(this.localStream?.getTracks()||[]),this.cameraTrack,this.screenTrack].filter(Boolean));for(const track of tracks)track.stop();this.localStream=null;this.cameraTrack=null;this.screenTrack=null;this.channel=null;this.camera=false;this.screen=false;this.mic=true;this.onChange();
   }
 }

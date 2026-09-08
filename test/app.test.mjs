@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { randomUUID } from 'node:crypto';
 import { createApp } from '../server.mjs';
 
 async function appFixture(t, options = {}) {
@@ -21,6 +22,21 @@ async function guest(base) {
 }
 async function account(base, username='criador') {
   return guest(base);
+}
+async function openEvents(base,cookie,clientId,t){
+  const controller=new AbortController(),response=await fetch(`${base}/api/events?clientId=${clientId}`,{headers:{cookie},signal:controller.signal});
+  assert.equal(response.status,200);const connection={reader:response.body.getReader(),decoder:new TextDecoder(),buffer:'',controller};t.after(()=>controller.abort());
+  await nextEvent(connection,'connected');return connection;
+}
+async function nextEvent(connection,name,timeout=2500){
+  const timer=setTimeout(()=>connection.controller.abort(),timeout);
+  try{
+    while(true){
+      const boundary=connection.buffer.indexOf('\n\n');
+      if(boundary>=0){const block=connection.buffer.slice(0,boundary);connection.buffer=connection.buffer.slice(boundary+2);const event=/^event: (.+)$/m.exec(block)?.[1],data=/^data: (.+)$/m.exec(block)?.[1];if(event===name)return JSON.parse(data);continue}
+      const {done,value}=await connection.reader.read();if(done)throw new Error(`Fluxo SSE terminou antes do evento ${name}.`);connection.buffer+=connection.decoder.decode(value,{stream:true});
+    }
+  }finally{clearTimeout(timer)}
 }
 test('creates an isolated automatic account with strong generated credentials', async t => {
   const { base } = await appFixture(t); const first = await guest(base), second = await guest(base);
@@ -125,6 +141,25 @@ test('creates customized servers, roles, VFX channels, public invites and attach
   const delegated=await fetch(base+'/api/channels',{method:'POST',headers:collaboratorAuth,body:JSON.stringify({serverId,name:'moderado',type:'text',font:'inherit',vfx:false})});assert.equal(delegated.status,201);
   const upload=await fetch(base+`/api/files?channelId=${channelId}`,{method:'POST',headers:{cookie,'Content-Type':'text/plain','X-Orbit-Request':'1','X-CSRF-Token':data.csrf,'X-File-Name':encodeURIComponent('ideia.txt')},body:'conteúdo compartilhado'});assert.equal(upload.status,201);const message=await upload.json();assert.equal(message.attachments[0].name,'ideia.txt');
   const download=await fetch(base+message.attachments[0].url,{headers:{cookie}});assert.equal(await download.text(),'conteúdo compartilhado');assert.match(download.headers.get('content-disposition'),/attachment/);
+});
+test('relays screen compatibility frames only inside the same voice call', async t => {
+  const {base}=await appFixture(t),owner=await account(base),friend=await account(base),outsider=await account(base);
+  const ownerAuth={cookie:owner.cookie,'Content-Type':'application/json','X-Orbit-Request':'1','X-CSRF-Token':owner.data.csrf};
+  const created=await fetch(base+'/api/servers',{method:'POST',headers:ownerAuth,body:JSON.stringify({name:'Equipe Tela'})}),serverId=(await created.json()).id;
+  const ownerBoot=await (await fetch(base+'/api/bootstrap',{headers:{cookie:owner.cookie}})).json(),voice=ownerBoot.channels.find(channel=>channel.server_id===serverId&&channel.type==='voice');
+  const invite=await (await fetch(base+`/api/invite?serverId=${serverId}`,{headers:{cookie:owner.cookie}})).json();
+  const friendAuth={cookie:friend.cookie,'Content-Type':'application/json','X-Orbit-Request':'1','X-CSRF-Token':friend.data.csrf};
+  await fetch(base+'/api/join',{method:'POST',headers:friendAuth,body:JSON.stringify({invite:invite.invite})});
+  const ownerId=randomUUID(),friendId=randomUUID(),ownerEvents=await openEvents(base,owner.cookie,ownerId,t),friendEvents=await openEvents(base,friend.cookie,friendId,t);
+  await fetch(base+'/api/call/join',{method:'POST',headers:ownerAuth,body:JSON.stringify({channelId:voice.id,clientId:ownerId})});
+  const joined=await fetch(base+'/api/call/join',{method:'POST',headers:friendAuth,body:JSON.stringify({channelId:voice.id,clientId:friendId})});assert.equal(joined.status,200);assert.equal((await joined.json()).peers.length,1);
+  const image=Buffer.alloc(20000);image.write('RIFF',0);image.write('WEBP',8);const frame='data:image/webp;base64,'+image.toString('base64');
+  const received=nextEvent(friendEvents,'screen-frame'),sent=await fetch(base+'/api/call/screen-frame',{method:'POST',headers:ownerAuth,body:JSON.stringify({clientId:ownerId,frame})});assert.equal(sent.status,202);
+  assert.deepEqual(await received,{clientId:ownerId,frame});
+  const outsiderAuth={cookie:outsider.cookie,'Content-Type':'application/json','X-Orbit-Request':'1','X-CSRF-Token':outsider.data.csrf};
+  const denied=await fetch(base+'/api/call/screen-frame',{method:'POST',headers:outsiderAuth,body:JSON.stringify({clientId:randomUUID(),frame})});assert.equal(denied.status,403);
+  const stopped=nextEvent(friendEvents,'screen-stopped');await fetch(base+'/api/call/screen-stop',{method:'POST',headers:ownerAuth,body:JSON.stringify({clientId:ownerId})});assert.deepEqual(await stopped,{clientId:ownerId});
+  ownerEvents.controller.abort();friendEvents.controller.abort();
 });
 test('finds JavaScript syntax errors without executing the source', async t => {
   const { base } = await appFixture(t,{localRuntime:true}); const { cookie, data } = await guest(base);
