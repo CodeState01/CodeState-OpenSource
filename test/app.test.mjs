@@ -15,19 +15,40 @@ async function appFixture(t, options = {}) {
 }
 async function guest(base) {
   const response = await fetch(base + '/api/guest', { method: 'POST', headers: { 'Content-Type':'application/json', 'X-Orbit-Request':'1' }, body:JSON.stringify({terms:true}) });
-  assert.equal(response.status, 201); const cookie = response.headers.get('set-cookie').split(';')[0];
+  assert.equal(response.status, 201); const cookie = response.headers.get('set-cookie').split(';')[0],created=await response.json();
   const boot = await fetch(base + '/api/bootstrap', { headers:{ cookie } });
-  return { cookie, data: await boot.json() };
+  return { cookie, data: await boot.json(), credentials:created.credentials };
 }
 async function account(base, username='criador') {
-  const visitor=await guest(base),response=await fetch(base+'/api/register',{method:'POST',headers:{cookie:visitor.cookie,'Content-Type':'application/json','X-Orbit-Request':'1','X-CSRF-Token':visitor.data.csrf},body:JSON.stringify({name:'Criador CodeState',username,password:'Senha!Forte123',terms:true})});
-  assert.equal(response.status,201);const cookie=response.headers.get('set-cookie').split(';')[0],session=await response.json();return {cookie,data:{...visitor.data,...session}};
+  return guest(base);
 }
-test('creates an isolated guest session and serves bootstrap data', async t => {
+test('creates an isolated automatic account with strong generated credentials', async t => {
   const { base } = await appFixture(t); const first = await guest(base), second = await guest(base);
   assert.notEqual(first.data.user.id, second.data.user.id);
+  assert.equal(first.data.user.guest,false);assert.equal(first.data.user.username,first.credentials.username);
+  assert.match(first.credentials.username,/^[a-z0-9_-]{3,32}$/);
+  assert.ok(/[a-z]/.test(first.credentials.password)&&/[A-Z]/.test(first.credentials.password)&&/\d/.test(first.credentials.password)&&/[^A-Za-z0-9]/.test(first.credentials.password));
   assert.equal(first.data.servers[0].name, 'CodeState');
   assert.ok(first.data.channels.some(c => c.type === 'text'));
+});
+test('logs back into the same generated account after logout', async t => {
+  const {base}=await appFixture(t),created=await guest(base);
+  const auth={'Content-Type':'application/json','X-Orbit-Request':'1','X-CSRF-Token':created.data.csrf,cookie:created.cookie};
+  await fetch(base+'/api/logout',{method:'POST',headers:auth,body:'{}'});
+  const response=await fetch(base+'/api/login',{method:'POST',headers:{'Content-Type':'application/json','X-Orbit-Request':'1'},body:JSON.stringify(created.credentials)});
+  assert.equal(response.status,200);const cookie=response.headers.get('set-cookie').split(';')[0];
+  const restored=await (await fetch(base+'/api/bootstrap',{headers:{cookie}})).json();assert.equal(restored.user.id,created.data.user.id);
+});
+test('recreates an automatic account from locally saved credentials', async t => {
+  const {base,app}=await appFixture(t),created=await guest(base),userId=created.data.user.id;
+  app.db.prepare('DELETE FROM sessions WHERE user_id=?').run(userId);
+  app.db.prepare('DELETE FROM member_roles WHERE user_id=?').run(userId);
+  app.db.prepare('DELETE FROM members WHERE user_id=?').run(userId);
+  app.db.prepare('DELETE FROM users WHERE id=?').run(userId);
+  const response=await fetch(base+'/api/recover',{method:'POST',headers:{'Content-Type':'application/json','X-Orbit-Request':'1'},body:JSON.stringify({...created.credentials,name:'Nome Recuperado',terms:true})});
+  assert.equal(response.status,201);const cookie=response.headers.get('set-cookie').split(';')[0];
+  const restored=await (await fetch(base+'/api/bootstrap',{headers:{cookie}})).json();
+  assert.equal(restored.user.username,created.credentials.username);assert.equal(restored.user.name,'Nome Recuperado');
 });
 test('rejects local addresses as public invitation URLs', () => {
   assert.throws(() => createApp({ publicUrl:'https://127.0.0.1' }), /domínio público/);
@@ -63,13 +84,10 @@ test('keeps the default presentation channel visible and read-only', async t => 
   const response=await fetch(base+'/api/messages',{method:'POST',headers:{cookie,'Content-Type':'application/json','X-Orbit-Request':'1','X-CSRF-Token':data.csrf},body:JSON.stringify({channelId:'geral',content:'não deve entrar'})});
   assert.equal(response.status,403);assert.match((await response.json()).error,/somente leitura/);
 });
-test('requires terms acceptance before creating a session or account', async t => {
+test('requires terms acceptance before creating an automatic account', async t => {
   const {base}=await appFixture(t);
   const visitor=await fetch(base+'/api/guest',{method:'POST',headers:{'Content-Type':'application/json','X-Orbit-Request':'1'},body:'{}'});
   assert.equal(visitor.status,400);
-  const {cookie,data}=await guest(base);
-  const registration=await fetch(base+'/api/register',{method:'POST',headers:{cookie,'Content-Type':'application/json','X-Orbit-Request':'1','X-CSRF-Token':data.csrf},body:JSON.stringify({name:'Sem Termos',username:'semtermos',password:'Senha!Forte123'})});
-  assert.equal(registration.status,400);
 });
 test('keeps the OpenAI key on the server and provides a labeled demo fallback', async t => {
   const { base } = await appFixture(t, { apiKey:'' }); const { cookie, data } = await guest(base);
@@ -81,8 +99,8 @@ test('keeps the OpenAI key on the server and provides a labeled demo fallback', 
 test('updates avatar and banner safely in the user profile', async t => {
   const { base } = await appFixture(t); const { cookie, data } = await guest(base);
   const image='data:image/png;base64,iVBORw0KGgo=';
-  const response=await fetch(base+'/api/profile',{method:'PATCH',headers:{cookie,'Content-Type':'application/json','X-Orbit-Request':'1','X-CSRF-Token':data.csrf},body:JSON.stringify({name:'Criador',avatar:image,banner:image})});
-  const profile=await response.json();assert.equal(response.status,200);assert.equal(profile.name,'Criador');assert.equal(profile.avatar,image);assert.equal(profile.banner,image);
+  const response=await fetch(base+'/api/profile',{method:'PATCH',headers:{cookie,'Content-Type':'application/json','X-Orbit-Request':'1','X-CSRF-Token':data.csrf},body:JSON.stringify({name:'Criador',username:'criador-unico',avatar:image,banner:image})});
+  const profile=await response.json();assert.equal(response.status,200);assert.equal(profile.name,'Criador');assert.equal(profile.username,'criador-unico');assert.equal(profile.avatar,image);assert.equal(profile.banner,image);
   const bootstrap=await (await fetch(base+'/api/bootstrap',{headers:{cookie}})).json();assert.equal(bootstrap.user.avatar,image);assert.equal(bootstrap.members.find(member=>member.id===profile.id).avatar,image);
 });
 test('creates customized servers, roles, VFX channels, public invites and attachments', async t => {

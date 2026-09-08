@@ -27,6 +27,7 @@ const paths = {
   phoneOff: '<path d="M3 10a17 17 0 0 1 18 0l-1 5-5-1v-3H9v3l-5 1-1-5Z"/>',
   help: '<circle cx="12" cy="12" r="9"/><path d="M9 8a3 3 0 1 1 5 3c-2 1-2 2-2 3m0 3h.01"/>',
   copy: '<rect x="8" y="8" width="13" height="13" rx="2"/><path d="M16 8V3H3v13h5"/>',
+  eye: '<path d="M2 12s3.5-6 10-6 10 6 10 6-3.5 6-10 6S2 12 2 12Z"/><circle cx="12" cy="12" r="2.5"/>',
   download: '<path d="M12 3v12m-4-4 4 4 4-4M3 16v5h18v-5"/>',
   refresh: '<path d="M20 7V2m0 5h-5M4 17v5m0-5h5M4 9a8 8 0 0 1 14-4l2 2M4 17l2 2a8 8 0 0 0 14-4"/>',
   save: '<path d="M3 3h14l4 4v14H3V3Zm4 0v6h9V3M7 21v-7h10v7"/>',

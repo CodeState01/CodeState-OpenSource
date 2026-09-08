@@ -1,6 +1,6 @@
 import http from 'node:http';
 import { DatabaseSync } from 'node:sqlite';
-import { randomBytes, randomUUID, createHash, scrypt, timingSafeEqual } from 'node:crypto';
+import { randomBytes, randomUUID, randomInt, createHash, scrypt, timingSafeEqual } from 'node:crypto';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { mkdirSync, readFileSync, existsSync, createReadStream } from 'node:fs';
@@ -17,6 +17,27 @@ const hash = value => createHash('sha256').update(value).digest('hex');
 const token = () => randomBytes(32).toString('hex');
 const id = () => randomUUID();
 const publicUser = u => ({ id: u.id, name: u.name, color: u.color, guest: !!u.guest, avatar: u.avatar || '', banner: u.banner || '' });
+const usernameWords = ['astro','byte','codigo','cometa','fluxo','nexo','pixel','quasar','vetor','zenite'];
+function generatedUsername() {
+  return `${usernameWords[randomInt(usernameWords.length)]}-${usernameWords[randomInt(usernameWords.length)]}-${randomBytes(3).toString('hex')}`;
+}
+function generatedPassword() {
+  let value;
+  do value = `Cs!${randomBytes(12).toString('base64url')}9a`;
+  while (/(.)\1{3,}/.test(value));
+  return value;
+}
+function validUsername(value) {
+  const username = string(value, 3, 32, 'Usuário').toLowerCase();
+  check(/^[a-z0-9_-]+$/.test(username), 400, 'Use letras sem acento, números, _ ou - no usuário.');
+  check(!/(.)\1{3,}/i.test(username) && !/^(user|usuario|admin|teste|test|guest)\d*$/i.test(username), 400, 'Escolha um nome único, sem repetições ou nomes genéricos.');
+  return username;
+}
+function validPassword(value) {
+  const password = string(value, 10, 128, 'Senha');
+  check(/[a-z]/.test(password) && /[A-Z]/.test(password) && /\d/.test(password) && /[^A-Za-z0-9]/.test(password) && !/(.)\1{3,}/.test(password), 400, 'A senha precisa de maiúscula, minúscula, número e símbolo, sem repetições longas.');
+  return password;
+}
 class HttpError extends Error { constructor(status, message) { super(message); this.status = status; } }
 function check(condition, status, message) { if (!condition) throw new HttpError(status, message); }
 function string(value, min, max, label = 'Texto') {
@@ -257,8 +278,8 @@ export function createApp(options = {}) {
   }
   function newSession(res, userId) {
     const secret = token(), csrf = token();
-    run('INSERT INTO sessions VALUES (?,?,?,?)', hash(secret), userId, csrf, Date.now() + 7 * 86400000);
-    res.setHeader('Set-Cookie', `orbit_session=${secret}; HttpOnly; SameSite=Strict; Path=/; Max-Age=604800${config.production ? '; Secure' : ''}`);
+    run('INSERT INTO sessions VALUES (?,?,?,?)', hash(secret), userId, csrf, Date.now() + 365 * 86400000);
+    res.setHeader('Set-Cookie', `orbit_session=${secret}; HttpOnly; SameSite=Strict; Path=/; Max-Age=31536000${config.production ? '; Secure' : ''}`);
     return { csrf, user: publicUser(get('SELECT * FROM users WHERE id=?', userId)) };
   }
   function emitServer(serverId, event, data) {
@@ -298,7 +319,7 @@ export function createApp(options = {}) {
     const legacy = get('SELECT html,css FROM projects WHERE user_id=?', user.id) || null;
     const savedFiles = Object.fromEntries(all('SELECT language,content FROM project_files WHERE user_id=?', user.id).map(f => [f.language, f.content]));
     const aiHistory = all('SELECT role,content FROM ai_messages WHERE user_id=? ORDER BY created_at DESC,rowid DESC LIMIT 20', user.id).reverse();
-    return { user: publicUser(user), csrf: user.csrf, servers, channels, members, calls: callCounts(), aiEnabled: aiProviders.some(p => p.id !== 'demo' && p.available), aiProviders, guestAI: config.allowGuestAI, project: legacy ? { ...legacy, ...savedFiles } : (Object.keys(savedFiles).length ? savedFiles : null), aiHistory };
+    return { user: { ...publicUser(user), username:user.username || '' }, csrf: user.csrf, servers, channels, members, calls: callCounts(), aiEnabled: aiProviders.some(p => p.id !== 'demo' && p.available), aiProviders, guestAI: config.allowGuestAI, project: legacy ? { ...legacy, ...savedFiles } : (Object.keys(savedFiles).length ? savedFiles : null), aiHistory };
   }
   const allowedStatic = new Map(['index.html', 'terms.html', 'styles.css', 'captcha.css', 'features.css', 'app.js', 'calls.js', 'icons.js', 'favicon.svg'].map(f => ['/' + f, resolve(root, 'public', f)]));
   const server = http.createServer(async (req, res) => {
@@ -328,7 +349,7 @@ export function createApp(options = {}) {
         check(req.headers['sec-fetch-site'] !== 'cross-site', 403, 'Origem não autorizada.');
       }
       const ip = req.socket.remoteAddress || 'unknown';
-      if (url.pathname === '/api/health' && req.method === 'GET') return json(200, { status: 'ok' });
+      if (url.pathname === '/api/health' && req.method === 'GET') return json(200, { status: 'ok', identity:'automatic-v1' });
       if (url.pathname === '/api/captcha' && req.method === 'GET') {
         rate('captcha:'+ip,30,3600000);const alphabet='ABCDEFGHJKLMNPQRSTUVWXYZ23456789';let answer='';for(let i=0;i<6;i++)answer+=alphabet[randomBytes(1)[0]%alphabet.length];const challengeId=id();captchas.set(challengeId,{answer:hash(answer),expires:Date.now()+120000,ip});
         for(const [key,value] of captchas)if(value.expires<Date.now())captchas.delete(key);
@@ -343,11 +364,13 @@ export function createApp(options = {}) {
         check(input.terms === true || input.terms === 'on', 400, 'Aceite os Termos e as Regras para entrar.');
         if(config.requireCaptcha){const challenge=captchas.get(input.captchaId);captchas.delete(input.captchaId);check(challenge&&challenge.expires>Date.now()&&challenge.ip===ip&&challenge.answer===hash(String(input.captchaText||'').trim().toUpperCase()),403,'Código da imagem incorreto ou expirado.');}
         const userId = id(), colors = ['mint', 'purple', 'blue', 'orange'];
-        run('INSERT INTO users (id,name,color,terms_at) VALUES (?,?,?,?)', userId, `Visitante ${randomBytes(2).toString('hex').toUpperCase()}`, colors[Math.floor(Math.random() * colors.length)], Date.now());
+        let username; do username=generatedUsername(); while(get('SELECT id FROM users WHERE username=?',username));
+        const password=generatedPassword(),salt=token(),derived=await hashPassword(password,salt,64);
+        run('INSERT INTO users (id,name,username,password,color,guest,terms_at) VALUES (?,?,?,?,?,0,?)', userId, username, username, `${salt}:${derived.toString('hex')}`, colors[randomInt(colors.length)], Date.now());
         run('INSERT INTO members VALUES (?,?)', 'orbit', userId);
         run('INSERT OR IGNORE INTO member_roles VALUES (?,?,?)','orbit',userId,'orbit:member');
-        newSession(res, userId);
-        return json(201, { ok: true });
+        const created=newSession(res, userId);
+        return json(201, { ok: true, ...created, credentials:{username,password} });
       }
       if (url.pathname === '/api/login' && req.method === 'POST') {
         rate('login:' + ip, 12, 900000);
@@ -360,6 +383,19 @@ export function createApp(options = {}) {
         check(candidate && timingSafeEqual(Buffer.from(saved, 'hex'), derived), 401, 'Usuário ou senha incorretos.');
         if (user) { run('DELETE FROM sessions WHERE hash=?', user.hash); disconnectSession(user.hash); }
         return json(200, newSession(res, candidate.id));
+      }
+      if (url.pathname === '/api/recover' && req.method === 'POST') {
+        rate('recover:' + ip, 6, 3600000);
+        const input=await body(req),username=validUsername(input.username),password=validPassword(input.password);
+        check(input.terms === true, 400, 'Aceite os Termos e as Regras para recuperar a conta.');
+        check(/^Cs![A-Za-z0-9_-]{16}9a$/.test(password), 400, 'Esta credencial não foi gerada automaticamente pelo CodeState.');
+        check(!get('SELECT id FROM users WHERE username=?',username),409,'A conta existe; entre com a senha correta.');
+        const userId=id(),name=typeof input.name==='string'&&input.name.trim().length>=2?string(input.name,2,40,'Nome'):username;
+        const salt=token(),derived=await hashPassword(password,salt,64),colors=['mint','purple','blue','orange'];
+        run('INSERT INTO users (id,name,username,password,color,guest,terms_at) VALUES (?,?,?,?,?,0,?)',userId,name,username,`${salt}:${derived.toString('hex')}`,colors[randomInt(colors.length)],Date.now());
+        run('INSERT INTO members VALUES (?,?)','orbit',userId);
+        run('INSERT OR IGNORE INTO member_roles VALUES (?,?,?)','orbit',userId,'orbit:member');
+        return json(201,newSession(res,userId));
       }
       check(user, 401, 'Sua sessão expirou. Entre novamente.');
       if (mutating) check(req.headers['x-csrf-token'] === user.csrf, 403, 'Token de segurança inválido. Atualize a página.');
@@ -374,19 +410,19 @@ export function createApp(options = {}) {
       }
       if (url.pathname === '/api/profile' && req.method === 'PATCH') {
         const b = await body(req); const name = string(b.name, 2, 40, 'Nome');
+        const username = b.username === undefined ? user.username : validUsername(b.username);
+        check(!get('SELECT id FROM users WHERE username=? AND id<>?', username, user.id), 409, 'Este usuário já está em uso.');
         const avatar = b.avatar === undefined ? user.avatar || '' : profileImage(b.avatar, 'Avatar');
         const banner = b.banner === undefined ? user.banner || '' : profileImage(b.banner, 'Banner');
-        run('UPDATE users SET name=?,avatar=?,banner=? WHERE id=?', name, avatar, banner, user.id); presence();
-        return json(200, publicUser(get('SELECT * FROM users WHERE id=?', user.id)));
+        run('UPDATE users SET name=?,username=?,avatar=?,banner=? WHERE id=?', name, username, avatar, banner, user.id); presence();
+        const updated=get('SELECT * FROM users WHERE id=?', user.id);
+        return json(200, { ...publicUser(updated), username:updated.username || '' });
       }
       if (url.pathname === '/api/register' && req.method === 'POST') {
         check(user.guest, 409, 'Esta conta já está cadastrada.'); rate('register:' + ip, 8, 3600000);
-        const b = await body(req), username = string(b.username, 3, 32, 'Usuário').toLowerCase();
+        const b = await body(req), username = validUsername(b.username);
         check(b.terms === true || b.terms === 'on', 400, 'Aceite os Termos e as Regras para criar a conta.');
-        check(/^[a-z0-9_-]+$/.test(username), 400, 'Use letras sem acento, números, _ ou - no usuário.');
-        const name = string(b.name, 2, 40, 'Nome'), password = string(b.password, 10, 128, 'Senha');
-        check(!/(.)\1{3,}/i.test(username) && !/^(user|usuario|admin|teste|test|guest)\d*$/i.test(username), 400, 'Escolha um nome único, sem repetições ou nomes genéricos.');
-        check(/[a-z]/.test(password) && /[A-Z]/.test(password) && /\d/.test(password) && /[^A-Za-z0-9]/.test(password) && !/(.)\1{3,}/.test(password), 400, 'A senha precisa de maiúscula, minúscula, número e símbolo, sem repetições longas.');
+        const name = string(b.name, 2, 40, 'Nome'), password = validPassword(b.password);
         check(!get('SELECT id FROM users WHERE username=?', username), 409, 'Este usuário já está em uso.');
         const salt = token(), derived = await hashPassword(password, salt, 64);
         // Recheck after asynchronous password hashing to avoid a registration race.

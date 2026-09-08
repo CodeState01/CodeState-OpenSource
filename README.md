@@ -19,6 +19,7 @@ Um espaço colaborativo em português com chat em tempo real, servidores e canai
 - Chamadas WebRTC com microfone, câmera e compartilhamento de tela; o `.exe` usa o seletor nativo de tela do sistema.
 - Interface responsiva, navegação por teclado, loaders personalizados e tema escuro em português.
 - Canal inicial de apresentação somente leitura, aceite obrigatório dos Termos e avisos claros sobre as limitações e a espera da IA Beta.
+- Conta automática no primeiro acesso: o servidor cria username e senha fortes, guarda as credenciais no dispositivo, mantém a sessão por um ano e recupera a identidade quando o banco gratuito reinicia. Nome de exibição e username continuam editáveis.
 
 ## Executar
 
@@ -48,7 +49,7 @@ O instalador Windows verifica novas versões publicadas em `CodeState01/codestat
 
 Defina `PUBLIC_APP_URL=https://app.seu-dominio.com` no servidor publicado. Os convites passam a usar esse domínio; IPs, `localhost` e domínios `.local` são rejeitados. Sem essa variável, o aplicativo mostra somente o código de convite para evitar gerar um link local quebrado.
 
-O arquivo `render.yaml` prepara uma implantação gratuita chamada `codestate-community`. O Render fornece automaticamente um endereço `*.onrender.com`; `scripts/start-public.mjs` usa esse endereço em todos os convites e inicia o serviço em `0.0.0.0`. A camada gratuita é adequada para testes com amigos, mas seu disco é temporário: contas, mensagens e anexos podem ser apagados quando o serviço reiniciar. Para uma comunidade permanente, conecte armazenamento e banco persistentes antes de divulgar amplamente.
+O arquivo `render.yaml` prepara uma implantação gratuita chamada `codestate-community`. O Render fornece automaticamente um endereço `*.onrender.com`; `scripts/start-public.mjs` usa esse endereço em todos os convites e inicia o serviço em `0.0.0.0`. A conta automática pode ser recriada com as credenciais salvas no dispositivo quando o Render reiniciar. A camada gratuita continua com disco temporário, então servidores privados, mensagens e anexos podem ser apagados; para preservar esse conteúdo, conecte armazenamento e banco persistentes antes de divulgar amplamente.
 
 O aplicativo instalado usa `https://codestate-community.onrender.com` por padrão. Argumentos `--server` e `CODESTATE_SERVER_URL` continuam tendo prioridade para ambientes próprios.
 
