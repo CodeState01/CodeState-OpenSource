@@ -2,30 +2,20 @@ const { app, BrowserWindow, session, shell, dialog, desktopCapturer } = require(
 const { appendFileSync } = require('node:fs');
 const { tmpdir } = require('node:os');
 const { join } = require('node:path');
-const { pathToFileURL } = require('node:url');
 const { autoUpdater } = require('electron-updater');
 
-let window, orbit;
+let window;
 const diagnosticLog = join(tmpdir(), 'orbit-studio-error.log');
 try { appendFileSync(diagnosticLog, `${new Date().toISOString()} desktop process started\n`); } catch {}
-const isLocal = value => { try { const u = new URL(value); return u.hostname === '127.0.0.1' || u.hostname === 'localhost'; } catch { return false; } };
 const defaultPublicServer = 'https://codestate-community.onrender.com';
 
 async function start() {
   try { appendFileSync(diagnosticLog, `${new Date().toISOString()} Electron ready\n`); } catch {}
   const appRoot = app.getAppPath();
   const serverArg = process.argv.find(value => value.startsWith('--server='))?.slice(9) || process.env.CODESTATE_SERVER_URL || process.env.ORBIT_SERVER_URL || defaultPublicServer;
-  let target;
-  if (serverArg) {
-    const remote = new URL(serverArg);
-    if (remote.protocol !== 'https:' && !['localhost','127.0.0.1'].includes(remote.hostname)) throw new Error('O servidor remoto precisa usar HTTPS.');
-    target = remote.href.replace(/\/$/, '');
-  } else {
-    const { createApp } = await import(pathToFileURL(join(appRoot, 'server.mjs')).href);
-    orbit = createApp({ dataDir: join(app.getPath('userData'), 'data'), origin: '', localRuntime: true });
-    await new Promise((resolve, reject) => { orbit.server.once('error', reject); orbit.server.listen(0, '127.0.0.1', resolve); });
-    target = `http://127.0.0.1:${orbit.server.address().port}`;
-  }
+  const remote = new URL(serverArg);
+  if (remote.protocol !== 'https:' && !['localhost','127.0.0.1'].includes(remote.hostname)) throw new Error('O servidor remoto precisa usar HTTPS.');
+  const target = remote.href.replace(/\/$/, '');
   const allowedOrigin = new URL(target).origin;
 
   session.defaultSession.setPermissionRequestHandler((_contents, permission, callback) => callback(['media', 'display-capture'].includes(permission)));
@@ -70,4 +60,3 @@ app.on('ready', () => start().catch(error => {
   app.quit();
 }));
 app.on('window-all-closed', () => app.quit());
-app.on('before-quit', () => { if (orbit) { orbit.server.closeAllConnections(); orbit.server.close(); orbit.db.close(); orbit = null; } });

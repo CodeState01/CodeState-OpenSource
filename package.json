@@ -1,6 +1,6 @@
 {
   "name": "codestate",
-  "version": "2.6.0",
+  "version": "2.6.1",
   "private": true,
   "type": "module",
   "main": "desktop/main.cjs",
@@ -26,12 +26,18 @@
     "appId": "studio.orbit.desktop",
     "productName": "CodeState",
     "asar": true,
+    "electronFuses": {
+      "runAsNode": false,
+      "enableCookieEncryption": true,
+      "enableNodeOptionsEnvironmentVariable": false,
+      "enableNodeCliInspectArguments": false,
+      "enableEmbeddedAsarIntegrityValidation": true,
+      "onlyLoadAppFromAsar": true,
+      "grantFileProtocolExtraPrivileges": false
+    },
     "electronDist": "vendor/electron-dist",
     "files": [
       "desktop/**/*",
-      "public/**/*",
-      "scripts/**/*",
-      "server.mjs",
       "package.json",
       "node_modules/electron-updater/**/*",
       "node_modules/builder-util-runtime/**/*",
